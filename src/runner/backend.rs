@@ -13,6 +13,7 @@ use crate::core::fleet::{self, Fleet, Target};
 use crate::core::ipc::{self, Event, FromMod, ToMod};
 use crate::core::place::Rect;
 use crate::core::proxy::{self, Fault};
+use crate::core::shots::Moment;
 use crate::core::{adopt, drive, headless, install, net, online};
 
 const PRESENT_EVERY: Duration = Duration::from_millis(100);
@@ -55,6 +56,8 @@ pub enum Update<P> {
     ProxyChecked { key: String, fault: Option<Fault> },
     /// Whether `server` answered its status ping.
     ServerProbed { server: String, up: bool },
+    /// A screenshot a connection-only account took.
+    Moment { key: String, moment: Moment },
 }
 
 /// Runs and talks to instances off the UI thread: the real fleet, or a fake one when an agent drives the app.
@@ -143,10 +146,14 @@ impl<P: Pixels> Real<P> {
                     drive::note(format!("chat {at} {instance} {text}"));
                 }
                 let update = match event {
-                    Event::Picture { instance, seq, width, height, rgba } => match P::from_rgba(width, height, rgba) {
-                        Some(image) => Update::Preview { key: instance, seq, image },
-                        None => continue,
-                    },
+                    Event::Picture { instance, seq, width, height, rgba, moment } => {
+                        if let Some(image) = P::from_rgba(width, height, rgba)
+                            && forward.send_blocking(Update::Preview { key: instance.clone(), seq, image }).is_err()
+                        {
+                            return;
+                        }
+                        Update::Moment { key: instance, moment }
+                    }
                     event => Update::Ipc(event),
                 };
                 if forward.send_blocking(update).is_err() {

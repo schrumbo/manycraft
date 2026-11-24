@@ -1,10 +1,9 @@
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use freya::prelude::*;
 
 use super::shots_parts::Same;
-use super::shots_thumbs::{full, load_full};
+use super::shots_thumbs::{Source, full, load_full};
 use crate::core::i18n::{tr, trf};
 use crate::core::shots::Shot;
 use crate::view::commands::Shortcut;
@@ -87,24 +86,39 @@ fn wheel_factor(delta: f64) -> f32 {
     (delta as f32 * WHEEL_ZOOM).exp()
 }
 
+/// One screenshot the viewer shows: where its picture comes from, its stamp and the line above it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picture {
+    pub source: Source,
+    pub stamp: i64,
+    pub title: String,
+}
+
+/// The screenshot files as the viewer shows them, each named by its file.
+pub fn files(shots: &[Shot]) -> Vec<Picture> {
+    shots.iter().map(|s| Picture { source: Source::File(s.path.clone()), stamp: s.taken, title: s.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() }).collect()
+}
+
 /// A screenshot shown large in the tab: zoom with the wheel, the buttons or +, − and 0, drag it when it is larger than the
 /// stage, step with the arrow keys, leave with Esc.
 #[derive(PartialEq)]
 pub struct Viewer {
-    pub shots: Same<Vec<Shot>>,
+    pub shots: Same<Vec<Picture>>,
     pub at: usize,
     pub who: String,
     pub copying: bool,
     pub on_step: EventHandler<isize>,
     pub on_close: EventHandler<()>,
     pub on_copy: EventHandler<()>,
-    pub on_reveal: EventHandler<()>,
-    pub on_external: EventHandler<()>,
-    pub on_delete: EventHandler<()>,
+    /// Offers to save a copy where the user picks; for pictures that are not files.
+    pub on_save: Option<EventHandler<()>>,
+    pub on_reveal: Option<EventHandler<()>>,
+    pub on_external: Option<EventHandler<()>>,
+    pub on_delete: Option<EventHandler<()>>,
 }
 
 impl Viewer {
-    fn shot(&self, at: usize) -> Option<&Shot> {
+    fn shot(&self, at: usize) -> Option<&Picture> {
         self.shots.0.get(at)
     }
 }
@@ -123,8 +137,8 @@ impl Component for Viewer {
         let Some(shot) = self.shot(self.at) else {
             return rect().width(Size::fill()).height(Size::fill()).center().child(secondary(&t, tr("Der Screenshot ist nicht mehr da."))).into_element();
         };
-        let neighbors: Vec<(PathBuf, i64)> = [self.at.checked_add(1), self.at.checked_sub(1)].into_iter().flatten().filter_map(|n| self.shot(n)).map(|s| (s.path.clone(), s.taken)).collect();
-        use_side_effect_with_deps(&(shot.path.clone(), shot.taken, neighbors), move |(path, stamp, neighbors)| {
+        let neighbors: Vec<(Source, i64)> = [self.at.checked_add(1), self.at.checked_sub(1)].into_iter().flatten().filter_map(|n| self.shot(n)).map(|s| (s.source.clone(), s.stamp)).collect();
+        use_side_effect_with_deps(&(shot.source.clone(), shot.stamp, neighbors), move |(path, stamp, neighbors)| {
             if let Some(old) = loading.write().take() {
                 old.cancel();
             }
@@ -142,7 +156,7 @@ impl Component for Viewer {
             })));
         });
 
-        let picture = full(&shot.path, shot.taken);
+        let picture = full(&shot.source, shot.stamp);
         let size = picture.as_ref().and_then(|p| p.as_ref()).map_or((0., 0.), |f| (f.original.0 as f32, f.original.1 as f32));
         let area = *stage.read();
         let fit = fit_scale(area, size);
@@ -151,7 +165,7 @@ impl Component for Viewer {
         let shown = (size.0 * scale, size.1 * scale);
         let pan = held(now.pan, shown, area);
         let movable = shown.0 > area.0 + 0.5 || shown.1 > area.1 + 0.5;
-        let name = shot.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = shot.title.clone();
         let count = self.shots.0.len();
         let last = self.at + 1 >= count;
 
@@ -172,11 +186,14 @@ impl Component for Viewer {
         let delete = {
             let on_delete = self.on_delete.clone();
             move || {
-                put(pose, FIT);
-                on_delete.call(());
+                if let Some(on_delete) = &on_delete {
+                    put(pose, FIT);
+                    on_delete.call(());
+                }
             }
         };
         let (key_step, key_close, key_delete) = (step.clone(), self.on_close.clone(), delete.clone());
+        let self_deletes = self.on_delete.is_some();
         let keys = move |e: Event<KeyboardEventData>| {
             if e.modifiers.intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::META) {
                 return;
@@ -190,7 +207,7 @@ impl Component for Viewer {
                 Key::Named(NamedKey::Home) => key_step(isize::MIN / 2),
                 Key::Named(NamedKey::End) => key_step(isize::MAX / 2),
                 Key::Named(NamedKey::Escape) => key_close.call(()),
-                Key::Named(NamedKey::Delete) => key_delete(),
+                Key::Named(NamedKey::Delete) if self_deletes => key_delete(),
                 Key::Character(c) if sized && (c == "+" || c == "=") => put(pose, pose.peek().factor(BUTTON_ZOOM, fit, area, size, (0., 0.))),
                 Key::Character(c) if sized && c == "-" => put(pose, pose.peek().factor(1. / BUTTON_ZOOM, fit, area, size, (0., 0.))),
                 Key::Character(c) if c == "0" => put(pose, FIT),
@@ -202,7 +219,7 @@ impl Component for Viewer {
 
         let (zoom_out, zoom_in, reset) = (zoom_by, zoom_by, pose);
         let percent = format!("{} %", (scale * 100.).round() as i64);
-        let toolbar = rect()
+        let mut toolbar = rect()
             .width(Size::fill())
             .horizontal()
             .cross_align(Alignment::Center)
@@ -232,16 +249,19 @@ impl Component for Viewer {
             .child(Button::new("instance.shots.view.copy", tr("Bild kopieren")).glyph(Icon::Copy).busy(self.copying).tip(Shortcut::primary(Code::KeyC).label()).on_press({
                 let copy = self.on_copy.clone();
                 move |_| copy.call(())
-            }))
-            .child(Button::icon("instance.shots.view.external", Icon::External, tr("Mit Standard-App öffnen")).on_press({
-                let open = self.on_external.clone();
-                move |_| open.call(())
-            }))
-            .child(Button::icon("instance.shots.view.reveal", Icon::Folder, tr("Im Ordner zeigen")).on_press({
-                let reveal = self.on_reveal.clone();
-                move |_| reveal.call(())
-            }))
-            .child(Button::icon("instance.shots.view.delete", Icon::Trash, tr("Löschen")).tip(Shortcut::bare(Code::Delete).label()).on_press(move |_| delete()));
+            }));
+        if let Some(save) = self.on_save.clone() {
+            toolbar = toolbar.child(Button::new("instance.shots.view.save", tr("Speichern unter …")).glyph(Icon::Download).tip(Shortcut::primary(Code::KeyS).label()).on_press(move |_| save.call(())));
+        }
+        if let Some(open) = self.on_external.clone() {
+            toolbar = toolbar.child(Button::icon("instance.shots.view.external", Icon::External, tr("Mit Standard-App öffnen")).on_press(move |_| open.call(())));
+        }
+        if let Some(reveal) = self.on_reveal.clone() {
+            toolbar = toolbar.child(Button::icon("instance.shots.view.reveal", Icon::Folder, tr("Im Ordner zeigen")).on_press(move |_| reveal.call(())));
+        }
+        if self.on_delete.is_some() {
+            toolbar = toolbar.child(Button::icon("instance.shots.view.delete", Icon::Trash, tr("Löschen")).tip(Shortcut::bare(Code::Delete).label()).on_press(move |_| delete()));
+        }
 
         let mut surface = rect()
             .width(Size::fill())

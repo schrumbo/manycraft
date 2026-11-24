@@ -37,6 +37,7 @@ pub enum Command {
     OpenChat,
     ShowScreen,
     ShowShots,
+    SaveShot,
     OpenSettings,
     NextInstance,
     PreviousInstance,
@@ -196,7 +197,7 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 69] = [
+    pub const ALL: [Command; 70] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
@@ -242,6 +243,7 @@ impl Command {
         Command::OpenChat,
         Command::ShowScreen,
         Command::ShowShots,
+        Command::SaveShot,
         Command::Larger,
         Command::Smaller,
         Command::Fit,
@@ -290,6 +292,7 @@ impl Command {
             Command::OpenChat => "OpenChat",
             Command::ShowScreen => "ShowScreen",
             Command::ShowShots => "ShowShots",
+            Command::SaveShot => "SaveShot",
             Command::OpenSettings => "OpenSettings",
             Command::NextInstance => "NextInstance",
             Command::PreviousInstance => "PreviousInstance",
@@ -361,6 +364,7 @@ impl Command {
             Command::OpenChat => tr("Chat"),
             Command::ShowScreen => tr("Bildschirm zeigen"),
             Command::ShowShots => tr("Screenshots ansehen"),
+            Command::SaveShot => tr("Screenshot speichern unter …"),
             Command::OpenSettings => tr("Einstellungen"),
             Command::NextInstance => tr("Nächsten Account spielen"),
             Command::PreviousInstance => tr("Vorherigen Account spielen"),
@@ -435,6 +439,7 @@ impl Command {
             Command::SwitchAccount => Icon::ChevronsUpDown,
             Command::OpenChat => Icon::Message,
             Command::ShowScreen | Command::ShowShots => Icon::Image,
+            Command::SaveShot => Icon::Download,
             Command::OpenSettings => Icon::Settings,
             Command::Larger => Icon::Plus,
             Command::Smaller => Icon::Minus,
@@ -472,6 +477,7 @@ impl Command {
             Command::OpenChat => ks(Code::KeyC),
             Command::ShowScreen => k(Code::KeyB),
             Command::ShowShots => ka(Code::KeyS),
+            Command::SaveShot => k(Code::KeyS),
             Command::OpenSettings => k(Code::Comma),
             Command::NextInstance => ca(Code::ArrowRight),
             Command::PreviousInstance => ca(Code::ArrowLeft),
@@ -566,6 +572,7 @@ impl Command {
             c @ (Command::AddAccount | Command::SignInWaiting | Command::RemoveAccounts | Command::AccountsAsList | Command::AccountsAsTable | Command::ImportPrism | Command::NewBatch | Command::NewInstance | Command::OpenTrash | Command::FindModpacks | Command::AddMods) => c.page_available(store),
             Command::ShowScreen => super::sheets::screen::target(store).is_some(),
             Command::ShowShots => super::grid::shots::target(store).is_some(),
+            Command::SaveShot => super::grid::shots::can_save(store),
             _ => true,
         }
     }
@@ -636,6 +643,7 @@ impl Command {
                     super::sheets::screen::open(store, &key);
                 }
             }
+            Command::SaveShot => super::grid::shots::save(store),
             Command::ShowShots => {
                 if let Some(key) = super::grid::shots::target(store) {
                     super::grid::shots::open(store, &key);
@@ -726,6 +734,7 @@ fn passes_layers(store: Store, command: Command) -> bool {
     match command {
         Command::Quit => true,
         Command::OpenPalette => store.ui.sheet.peek().is_none(),
+        Command::SaveShot => super::grid::shots::can_save(store),
         _ => false,
     }
 }

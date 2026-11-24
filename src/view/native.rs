@@ -357,11 +357,22 @@ static CLIPBOARD: std::sync::Mutex<Option<arboard::Clipboard>> = std::sync::Mute
 /// Puts the picture at `path` on the clipboard as an image; a driven window only notes it. Decodes the file, so it runs
 /// off the UI thread. The clipboard handle lives as long as the process: on Linux the data is served by it.
 pub fn copy_image(path: &std::path::Path) -> anyhow::Result<()> {
-    use anyhow::Context;
     if drive::fenced("copy image", path.display()) {
         return Ok(());
     }
-    let picture = crate::core::shots::decode(path)?;
+    put_image(crate::core::shots::decode(path)?)
+}
+
+/// Puts the PNG file in `png` on the clipboard as an image, like [`copy_image`].
+pub fn copy_png(png: &[u8]) -> anyhow::Result<()> {
+    if drive::fenced("copy image", png.len()) {
+        return Ok(());
+    }
+    put_image(crate::core::shots::decode_png(png)?)
+}
+
+fn put_image(picture: image::RgbaImage) -> anyhow::Result<()> {
+    use anyhow::Context;
     let (width, height) = (picture.width() as usize, picture.height() as usize);
     let mut held = CLIPBOARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if held.is_none() {
@@ -383,9 +394,9 @@ pub fn pick_files(title: &str, filter: &str, extensions: &[&str], many: bool) ->
 }
 
 /// Asks where to save `suggested` as a `filter` file of `extension` with the system's dialog, starting in the folder chosen
-/// last; blocks, so it runs off the UI thread, and gives None at once while another save dialog is open. A driven window
-/// gets the path the drive tool answers.
-pub fn save_file(title: &str, suggested: &str, filter: &str, extension: &str) -> Option<std::path::PathBuf> {
+/// last, at first in `first` or else the downloads; blocks, so it runs off the UI thread, and gives None at once while
+/// another save dialog is open. A driven window gets the path the drive tool answers.
+pub fn save_file(title: &str, suggested: &str, filter: &str, extension: &str, first: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
     static LAST: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
     static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if drive::on() {
@@ -395,7 +406,7 @@ pub fn save_file(title: &str, suggested: &str, filter: &str, extension: &str) ->
         return None;
     }
     let last = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let dir = last.or_else(dirs::download_dir).or_else(dirs::home_dir).unwrap_or_default();
+    let dir = last.or(first).or_else(dirs::download_dir).or_else(dirs::home_dir).unwrap_or_default();
     let path = rfd::FileDialog::new().set_title(title).set_directory(dir).set_file_name(suggested).add_filter(filter, &[extension]).save_file();
     OPEN.store(false, Ordering::Release);
     let path = path?;

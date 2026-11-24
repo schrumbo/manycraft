@@ -72,12 +72,15 @@ fn run(args: &[String]) -> Result<()> {
                     None => open.remove(instance),
                 };
             }
+            if let (Some(dir), Event::Picture { instance, moment, .. }) = (&shots, &event) {
+                keep(&dir.join(instance), moment);
+            }
             print_event(&event, &seen);
         }
     });
     let mut connections: Vec<(String, Connection)> = Vec::new();
     for name in names {
-        let spec = Spec { key: name.clone(), address: server.clone(), name: name.clone(), uuid: offline_uuid(&name), session: None, version: version.clone(), packs, proxy: None, conduct: Vec::new(), shots: shots.as_ref().map(|d| d.join(&name)) };
+        let spec = Spec { key: name.clone(), address: server.clone(), name: name.clone(), uuid: offline_uuid(&name), session: None, version: version.clone(), packs, proxy: None, conduct: Vec::new() };
         connections.push((name, start(spec, tx.clone())?));
         std::thread::sleep(stagger);
     }
@@ -144,6 +147,17 @@ fn run(args: &[String]) -> Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     }
     Ok(())
+}
+
+/// Writes a screenshot to `dir` as two PNG files, the view from above with `_above`, named by when it was taken.
+fn keep(dir: &std::path::Path, moment: &crate::core::shots::Moment) {
+    let stamp = chrono::DateTime::from_timestamp(moment.taken, 0).map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d_%H.%M.%S").to_string()).unwrap_or_default();
+    let name = |n: u32, suffix: &str| dir.join(if n == 0 { format!("{stamp}{suffix}.png") } else { format!("{stamp}_{n}{suffix}.png") });
+    let free = (0..1000).find(|n| !name(*n, "").exists()).unwrap_or(1000);
+    let written = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(name(free, ""), &moment.eyes)).and_then(|()| std::fs::write(name(free, "_above"), &moment.above));
+    if let Err(e) = written {
+        eprintln!("picture not written to {}: {e}", dir.display());
+    }
 }
 
 fn print_event(event: &Event, offers: &Mutex<HashMap<String, String>>) {

@@ -472,7 +472,7 @@ impl<P: Pixels> Sim<P> {
 
 fn touches<P>(update: &Update<P>, key: &str) -> bool {
     match update {
-        Update::Launched { key: k, .. } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } | Update::ProxyChecked { key: k, .. } => k == key,
+        Update::Launched { key: k, .. } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } | Update::ProxyChecked { key: k, .. } | Update::Moment { key: k, .. } => k == key,
         Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance } | Event::Picture { instance, .. }) => instance == key,
         Update::Preparing { .. } | Update::Prepared { .. } | Update::ServerProbed { .. } | Update::SignIn { .. } | Update::Still { .. } | Update::Face { .. } | Update::Reach { .. } | Update::Ipc(Event::Reopen | Event::Play { .. }) => false,
     }

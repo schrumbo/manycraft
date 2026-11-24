@@ -16,6 +16,7 @@ use crate::core::instance::Instance;
 use crate::core::i18n::{tr, trf};
 use crate::core::ipc::{MapPicture, Menu, Offer, Titles};
 use crate::core::proxy::Fault;
+use crate::core::shots::Moment;
 
 use super::session::{Frame, Session};
 
@@ -310,6 +311,9 @@ impl Game {
 }
 
 /// How long after a server line the same line from another instance counts as the same line.
+/// The screenshots a connection-only account keeps in memory.
+pub const MOMENTS_KEPT: usize = 4;
+
 pub const CHAT_MERGE: Duration = Duration::from_secs(5);
 const CHAT_RECENT_KEPT: usize = 512;
 
@@ -373,6 +377,9 @@ pub struct Model {
     pub offline: bool,
     /// The frame each tile has, by game key.
     pub frames: HashMap<String, Frame>,
+    /// The screenshots connection-only accounts took while Manycraft runs, newest first, at most `MOMENTS_KEPT` each, by
+    /// game key.
+    pub moments: HashMap<String, Vec<Moment>>,
     /// The memory one game of each batch was last measured to hold, in MB, by batch id.
     pub measured: HashMap<String, u32>,
     /// The account chosen to play instances alone that name none, as the settings keep it.

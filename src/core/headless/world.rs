@@ -346,6 +346,12 @@ impl World {
         }
     }
 
+    /// Whether every chunk within `radius` chunks of block `(x, z)` arrived.
+    pub fn around(&self, x: f64, z: f64, radius: i32) -> bool {
+        let center = ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4);
+        (-radius..=radius).all(|dx| (-radius..=radius).all(|dz| self.chunks.contains_key(&(center.0 + dx, center.1 + dz))))
+    }
+
     /// The chunks within `radius` chunks of block `(x, z)` and their changes.
     pub fn snapshot(&self, x: f64, z: f64, radius: i32) -> Snapshot {
         let center = ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4);
@@ -950,5 +956,22 @@ mod tests {
             w.weather(event, value);
         }
         assert_eq!(w.snapshot(0.0, 0.0, 1).sky, Sky { time: Some(13_000), rain: 1.0, thunder: 0.5 });
+    }
+
+    #[test]
+    fn the_world_is_around_a_place_once_every_chunk_near_it_arrived() {
+        let mut w = World::default();
+        assert!(!w.around(8.0, 8.0, 1));
+        for x in -1..=1 {
+            for z in -1..=1 {
+                if (x, z) != (1, 1) {
+                    w.chunk(&mut In::new(&chunk(x, z, &[0; 24])), (0, 0)).unwrap();
+                }
+            }
+        }
+        assert!(w.around(8.0, 8.0, 0));
+        assert!(!w.around(8.0, 8.0, 1), "one chunk near it is missing");
+        w.chunk(&mut In::new(&chunk(1, 1, &[0; 24])), (0, 0)).unwrap();
+        assert!(w.around(8.0, 8.0, 1));
     }
 }

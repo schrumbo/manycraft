@@ -4,7 +4,7 @@ use std::time::Duration;
 use super::super::effect::{Effect, Redraw};
 use super::super::event::{Event, Report};
 use super::super::meter::{self, Meter, Unit};
-use super::super::model::{ChatLine, Game, Model, Phase, rank};
+use super::super::model::{ChatLine, Game, MOMENTS_KEPT, Model, Phase, rank};
 use super::super::phase::{self, Why};
 use super::super::session::{Alert, Frame, HeldJoin, Reveal};
 use super::{Env, fleet, go, headless, notify, redraw, screen, show};
@@ -233,6 +233,13 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
                 fx.frames.push(Effect::ShowFrame { key, image, still });
             } else {
                 fx.frames.push(Effect::DropImage(image));
+            }
+        }
+        Report::Moment { key, moment } => {
+            if m.games.contains_key(&key) {
+                let kept = m.moments.entry(key).or_default();
+                kept.insert(0, moment);
+                kept.truncate(MOMENTS_KEPT);
             }
         }
         Report::Still { key, image } => {
@@ -1687,5 +1694,22 @@ mod tests {
         let (mut m, key) = setup(Phase::Playing { server: "s".into(), since: Instant::now() }, AccountKind::Microsoft, &[]);
         report(&mut m, &s, Report::ProxyChecked { key: key.clone(), fault: Some(Fault::Unreachable) });
         assert_eq!(m.hint(&key).proxy, None);
+    }
+
+    #[test]
+    fn a_connection_only_account_keeps_its_newest_screenshots_past_its_end() {
+        use crate::core::shots::Moment;
+        let s = settings();
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Microsoft, &[]);
+        let moment = |taken: i64| Moment { taken, eyes: std::sync::Arc::from(vec![1u8]), above: std::sync::Arc::from(vec![2u8]) };
+        for taken in 1..=6 {
+            report(&mut m, &s, Report::Moment { key: key.clone(), moment: moment(taken) });
+        }
+        let kept: Vec<i64> = m.moments[&key].iter().map(|s| s.taken).collect();
+        assert_eq!(kept, [6, 5, 4, 3]);
+        exited(&mut m, &s, &key, Some(0));
+        assert_eq!(m.moments[&key].len(), super::super::super::model::MOMENTS_KEPT, "an ended account keeps them");
+        report(&mut m, &s, Report::Moment { key: "gone".into(), moment: moment(9) });
+        assert!(!m.moments.contains_key("gone"));
     }
 }

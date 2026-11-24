@@ -105,6 +105,7 @@ impl Runtime {
                 Update::SignIn { account, valid } => Report::SignIn { account, valid },
                 Update::ProxyChecked { key, fault } => Report::ProxyChecked { key, fault },
                 Update::ServerProbed { server, up } => Report::ServerProbed { server, up },
+                Update::Moment { key, moment } => Report::Moment { key, moment },
                 Update::Ipc(Event::Connected { instance, pid, .. }) => Report::Connected { key: instance, pid },
                 Update::Ipc(Event::Message { instance, message }) => Report::Mod { key: instance, message },
                 Update::Ipc(Event::Disconnected { instance }) => Report::LinkLost { key: instance },

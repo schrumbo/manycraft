@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use freya::elements::image::ImageHandle;
 use freya::engine::prelude::AlphaType;
@@ -22,35 +24,64 @@ pub struct Full {
     pub original: (u32, u32),
 }
 
+/// Where a picture for the viewer comes from: a file, or a PNG file held in memory.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Source {
+    File(PathBuf),
+    Held(Held),
+}
+
+/// PNG bytes held in memory, the same picture as long as it is the same allocation; a value kept in a cache holds the
+/// allocation, so its address cannot stand for another picture meanwhile.
+#[derive(Clone, Debug)]
+pub struct Held(pub Arc<[u8]>);
+
+impl PartialEq for Held {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Held {}
+
+impl Hash for Held {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).cast::<u8>().hash(state);
+    }
+}
+
 struct Entry<V> {
     stamp: i64,
     value: V,
     used: u64,
 }
 
-/// Values by file, each valid for one file stamp, the least recently used dropped beyond `cap`.
-struct Kept<V> {
-    map: HashMap<PathBuf, Entry<V>>,
+/// Values by key, each valid for one stamp, the least recently used dropped beyond `cap`.
+struct Kept<K, V> {
+    map: HashMap<K, Entry<V>>,
     clock: u64,
     cap: usize,
 }
 
-impl<V: Clone> Kept<V> {
+impl<K: Clone + Eq + Hash, V: Clone> Kept<K, V> {
     fn new(cap: usize) -> Self {
         Self { map: HashMap::new(), clock: 0, cap }
     }
 
-    fn get(&mut self, path: &Path, stamp: i64) -> Option<V> {
+    fn get<Q: Eq + Hash + ?Sized>(&mut self, key: &Q, stamp: i64) -> Option<V>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
         self.clock += 1;
         let clock = self.clock;
-        let entry = self.map.get_mut(path).filter(|e| e.stamp == stamp)?;
+        let entry = self.map.get_mut(key).filter(|e| e.stamp == stamp)?;
         entry.used = clock;
         Some(entry.value.clone())
     }
 
-    fn put(&mut self, path: PathBuf, stamp: i64, value: V) {
+    fn put(&mut self, key: K, stamp: i64, value: V) {
         self.clock += 1;
-        self.map.insert(path, Entry { stamp, value, used: self.clock });
+        self.map.insert(key, Entry { stamp, value, used: self.clock });
         while self.map.len() > self.cap {
             let Some(oldest) = self.map.iter().min_by_key(|(_, e)| e.used).map(|(p, _)| p.clone()) else { return };
             self.map.remove(&oldest);
@@ -59,8 +90,8 @@ impl<V: Clone> Kept<V> {
 }
 
 thread_local! {
-    static KEPT: RefCell<Kept<Option<ImageHandle>>> = RefCell::new(Kept::new(files::THUMBS_KEPT));
-    static FULL: RefCell<Kept<Option<Full>>> = RefCell::new(Kept::new(VIEW_KEPT));
+    static KEPT: RefCell<Kept<PathBuf, Option<ImageHandle>>> = RefCell::new(Kept::new(files::THUMBS_KEPT));
+    static FULL: RefCell<Kept<Source, Option<Full>>> = RefCell::new(Kept::new(VIEW_KEPT));
     static GATE: (async_channel::Sender<()>, async_channel::Receiver<()>) = async_channel::bounded(files::DECODERS);
 }
 
@@ -73,23 +104,31 @@ fn keep(path: PathBuf, stamp: i64, picture: Option<ImageHandle>) {
 }
 
 /// The decoded screenshot for the viewer: `None` while it is not decoded, `Some(None)` when it cannot be.
-pub fn full(path: &Path, stamp: i64) -> Option<Option<Full>> {
-    FULL.with(|k| k.borrow_mut().get(path, stamp))
+pub fn full(source: &Source, stamp: i64) -> Option<Option<Full>> {
+    FULL.with(|k| k.borrow_mut().get(source, stamp))
 }
 
 /// Decodes the screenshot for the viewer off the UI thread unless it is kept already.
-pub async fn load_full(path: PathBuf, stamp: i64) {
-    if full(&path, stamp).is_some() {
+pub async fn load_full(source: Source, stamp: i64) {
+    if full(&source, stamp).is_some() {
         return;
     }
     let _slot = Slot::take().await;
-    if full(&path, stamp).is_some() {
+    if full(&source, stamp).is_some() {
         return;
     }
-    let source = path.clone();
-    let decoded = off_ui(move || shots::fitted(&source, VIEW_PX, VIEW_PX).ok().map(|(p, original)| (p.width(), p.height(), p.into_raw(), original))).await.flatten();
+    let from = source.clone();
+    let decoded = off_ui(move || {
+        let fitted = match &from {
+            Source::File(path) => shots::fitted(path, VIEW_PX, VIEW_PX),
+            Source::Held(png) => shots::fitted_png(&png.0, VIEW_PX, VIEW_PX),
+        };
+        fitted.ok().map(|(p, original)| (p.width(), p.height(), p.into_raw(), original))
+    })
+    .await
+    .flatten();
     let value = decoded.and_then(|(w, h, rgba, original)| ImageHandle::from_rgba(w, h, Bytes::from(rgba), AlphaType::Unpremul).map(|handle| Full { handle, original }));
-    FULL.with(|k| k.borrow_mut().put(path, stamp, value));
+    FULL.with(|k| k.borrow_mut().put(source, stamp, value));
 }
 
 /// One of the few places to decode at once; freed when dropped, also when the task is cancelled.

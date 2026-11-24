@@ -2360,5 +2360,16 @@
   "Die Serverliste wird geteilt.": "The server list is shared.",
   "Eigene Kopie der Spiel-Optionen.": "Own copy of the game options.",
   "Eigene Kopie der Mod-Einstellungen.": "Own copy of the mod settings.",
-  "Eigene Kopie der Serverliste.": "Own copy of the server list."
+  "Eigene Kopie der Serverliste.": "Own copy of the server list.",
+  "Speichern unter …": "Save As…",
+  "Screenshot speichern unter …": "Save Screenshot As…",
+  "Screenshot speichern": "Save Screenshot",
+  "„%@“ gespeichert.": "Saved “%@”.",
+  "Der Screenshot wurde nicht gespeichert.": "The screenshot was not saved.",
+  "von oben": "from above",
+  "Noch kein Screenshot": "No screenshot yet",
+  "Der erste entsteht von selbst, sobald der Account in einer Welt ist. Ein Doppelklick auf die Kachel nimmt sofort einen auf.": "The first one is taken on its own as soon as the account is in a world. Double-click the tile to take one right away.",
+  "Bleiben nur, solange Manycraft läuft.": "Kept only while Manycraft runs.",
+  "Stand %@": "As of %@",
+  "Der letzte Screenshot. Er bleibt nur, solange Manycraft läuft.": "The last screenshot. It is kept only while Manycraft runs."
 }

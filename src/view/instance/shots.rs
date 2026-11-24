@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::shots_parts::{Move, Same, bring_into_view, cell_width, centered, columns, key_move, moved, page, picture_height, row_height};
 use super::shots_thumbs::Thumb;
-use super::shots_view::Viewer;
+use super::shots_view::{Picture, Viewer, files};
 use super::{Facts, actions, use_extras};
 use crate::core::i18n::{tr, trf};
 use crate::core::shots::{self, Shot};
@@ -32,6 +32,13 @@ const DOUBLE: Duration = Duration::from_millis(450);
 struct List {
     loaded: bool,
     shots: Same<Vec<Shot>>,
+    pictures: Same<Vec<Picture>>,
+}
+
+impl List {
+    fn of(loaded: bool, shots: Vec<Shot>) -> Self {
+        Self { loaded, pictures: Same(Arc::new(files(&shots))), shots: Same(Arc::new(shots)) }
+    }
 }
 
 fn name_of(path: &Path) -> String {
@@ -185,7 +192,7 @@ impl Grid {
             viewing.set(false);
         }
         selected.set(next);
-        list.set(List { loaded: true, shots: Same(Arc::new(rest)) });
+        list.set(List::of(true, rest));
         let (store, dir) = (self.store, self.dir.clone());
         let name = name_of(&shot.path);
         spawn_in_window(async move {
@@ -352,7 +359,7 @@ impl Component for Shots {
         let f = &self.facts;
         let dir = f.made.dir();
         let changed = *store.ui.instance.changed.read();
-        let mut list = use_state(|| List { loaded: false, shots: Same(Arc::new(Vec::new())) });
+        let mut list = use_state(|| List::of(false, Vec::new()));
         let mut selected = use_state(|| None::<PathBuf>);
         let width = use_state(|| 0f32);
         let mut scan = use_state(|| 0u64);
@@ -375,7 +382,7 @@ impl Component for Shots {
                 let first = found.first().map(|s| s.path.clone());
                 let keep = selected.peek().clone().filter(|p| found.iter().any(|s| &s.path == p));
                 selected.set(keep.or(first));
-                list.set(List { loaded: true, shots: Same(Arc::new(found)) });
+                list.set(List::of(true, found));
                 grid.reveal_selected();
             });
         });
@@ -428,16 +435,17 @@ impl Component for Shots {
             let who = shown.shots.0.get(at).map_or_else(String::new, |s| f.accounts.iter().find(|(id, _)| *id == s.account).map_or_else(|| tr("Entfernter Account"), |(_, name)| name.clone()));
             let (step, close, external, reveal, delete, image) = (grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone(), grid.clone());
             return Viewer {
-                shots: shown.shots.clone(),
+                shots: shown.pictures.clone(),
                 at,
                 who,
                 copying: *copying.read(),
                 on_step: EventHandler::new(move |by| step.step(by)),
                 on_close: EventHandler::new(move |_| close.close()),
                 on_copy: EventHandler::new(move |_| image.copy_image()),
-                on_reveal: EventHandler::new(move |_| reveal.reveal()),
-                on_external: EventHandler::new(move |_| external.external()),
-                on_delete: EventHandler::new(move |_| delete.delete()),
+                on_save: None,
+                on_reveal: Some(EventHandler::new(move |_| reveal.reveal())),
+                on_external: Some(EventHandler::new(move |_| external.external())),
+                on_delete: Some(EventHandler::new(move |_| delete.delete())),
             }
             .into_element();
         }
