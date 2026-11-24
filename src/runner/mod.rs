@@ -96,7 +96,7 @@ impl Runtime {
                     self.insets.remove(&key);
                     Report::Exited { key, code }
                 }
-                Update::Preparing { batch, percent } => Report::Preparing { batch, percent },
+                Update::Preparing { batch, progress } => Report::Preparing { batch, progress },
                 Update::Prepared { batch } => Report::Prepared { batch },
                 Update::Launched { key, plain } => Report::Launched { key, plain },
                 Update::Failed { key, reason, login, offline } => Report::Failed { key, reason, login, offline },

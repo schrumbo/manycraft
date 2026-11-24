@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail};
 use super::batch::ModRef;
 use super::instance::{self as made, Loader};
 use super::prism::{self, Jar};
+use super::mrpack::Phase;
 use super::{fleet, modrinth, mrpack};
 
 /// Folder inside an instance that holds imported worlds until the first game of the instance moves them into its game folder.
@@ -165,7 +166,7 @@ fn scan_roots(roots: &[PathBuf]) -> Vec<Library> {
 /// Copies `found` into a new instance named after it with a free name: same game and loader version, its mods, config
 /// and, as asked, settings and worlds. Mods found on Modrinth by SHA-1 become pinned `ModRef`s; the others stay local
 /// jars. Saved before it returns; the other launcher's files are untouched.
-pub fn import(found: &Found, name: &str, take: Take, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<made::Instance> {
+pub fn import(found: &Found, name: &str, take: Take, cancel: &AtomicBool, progress: mrpack::Progress) -> Result<made::Instance> {
     let taken: Vec<String> = made::load_all()?.into_iter().map(|b| b.name).collect();
     let root = made::instances_dir();
     let name = mrpack::free_name(name, &taken);
@@ -184,7 +185,7 @@ pub(super) struct Spec<'a> {
     pub take: Take,
 }
 
-pub(super) fn import_into(found: &Found, name: &str, take: Take, root: &Path, lookup: Lookup, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<made::Instance> {
+pub(super) fn import_into(found: &Found, name: &str, take: Take, root: &Path, lookup: Lookup, cancel: &AtomicBool, progress: mrpack::Progress) -> Result<made::Instance> {
     if let Some(why) = &found.unsupported {
         bail!("{} cannot be imported: {why:?}", found.name);
     }
@@ -192,7 +193,7 @@ pub(super) fn import_into(found: &Found, name: &str, take: Take, root: &Path, lo
     copy_instance(&spec, root, lookup, cancel, progress)
 }
 
-pub(super) fn copy_instance(spec: &Spec, root: &Path, lookup: Lookup, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<made::Instance> {
+pub(super) fn copy_instance(spec: &Spec, root: &Path, lookup: Lookup, cancel: &AtomicBool, progress: mrpack::Progress) -> Result<made::Instance> {
     let name = spec.name.trim();
     if name.is_empty() {
         bail!("an instance needs a name");
@@ -202,21 +203,22 @@ pub(super) fn copy_instance(spec: &Spec, root: &Path, lookup: Lookup, cancel: &A
     let names = prism::jar_names(&spec.game_dir.join("mods"))?;
     let steps = names.len() * 2 + 4;
     let mut done = 0;
-    let mut step = || {
+    let mut step = |phase: Phase| {
         done += 1;
-        progress(done, steps);
+        progress(phase, done, steps);
     };
     let mut jars = Vec::with_capacity(names.len());
     for (jar_name, path) in names {
         check()?;
         let sha1 = super::net::file_sha1(&path).with_context(|| format!("cannot read {}", path.display()))?;
         jars.push(Jar { path, name: jar_name, sha1 });
-        step();
+        step(Phase::Reading);
     }
     check()?;
     let hashes: Vec<String> = jars.iter().map(|j| j.sha1.clone()).collect();
+    progress(Phase::Matching, 0, 0);
     let matched = lookup(&hashes).context("cannot look the mods up on Modrinth")?;
-    step();
+    step(Phase::Matching);
 
     let mut batch = made::Instance::new(name, game, spec.loader.clone());
     let mut copies: Vec<(&Jar, String)> = Vec::new();
@@ -252,17 +254,17 @@ pub(super) fn copy_instance(spec: &Spec, root: &Path, lookup: Lookup, cancel: &A
     Ok(batch)
 }
 
-fn copy_files(spec: &Spec, dest: &Path, copies: &[(&Jar, String)], check: &dyn Fn() -> Result<()>, step: &mut dyn FnMut()) -> Result<()> {
+fn copy_files(spec: &Spec, dest: &Path, copies: &[(&Jar, String)], check: &dyn Fn() -> Result<()>, step: &mut dyn FnMut(Phase)) -> Result<()> {
     let mods = dest.join("mods");
     std::fs::create_dir_all(&mods).with_context(|| format!("cannot create {}", mods.display()))?;
     for (jar, name) in copies {
         check()?;
         prism::copy_file(&jar.path, &mods.join(name))?;
-        step();
+        step(Phase::Copying);
     }
     check()?;
     copy_folder(&spec.game_dir.join("config"), &dest.join("config"), check)?;
-    step();
+    step(Phase::Copying);
     if spec.take.settings {
         let options = spec.game_dir.join(prism::OPTIONS_FILE);
         if options.is_file() {
@@ -273,7 +275,7 @@ fn copy_files(spec: &Spec, dest: &Path, copies: &[(&Jar, String)], check: &dyn F
             copy_folder(&spec.game_dir.join(folder), &dest.join(folder), check)?;
         }
     }
-    step();
+    step(Phase::Copying);
     if spec.take.worlds {
         check()?;
         let saves = spec.game_dir.join("saves");
@@ -281,7 +283,7 @@ fn copy_files(spec: &Spec, dest: &Path, copies: &[(&Jar, String)], check: &dyn F
             prism::copy_tree(&saves, &dest.join(SAVES_SEED), 0, check)?;
         }
     }
-    step();
+    step(Phase::Copying);
     Ok(())
 }
 
@@ -348,7 +350,7 @@ fn import_cli(key: &str, flags: &[&str]) -> Result<i32> {
         }
     }
     let found = scan().into_iter().flat_map(|l| l.instances).find(|i| i.key().eq_ignore_ascii_case(key)).with_context(|| format!("no instance {key}"))?;
-    let made = import(&found, name.as_deref().unwrap_or(&found.name), take, &AtomicBool::new(false), &|_, _| {})?;
+    let made = import(&found, name.as_deref().unwrap_or(&found.name), take, &AtomicBool::new(false), &|_, _, _| {})?;
     println!("Instance {} ({}): {}", made.name, made.id, made.version_line());
     println!("{} mods from Modrinth, {} local", made.mods.len(), made.local_mods.len());
     Ok(0)
@@ -410,7 +412,7 @@ mod tests {
 
     fn run(found: &Found, take: Take, out: &Path) -> Result<made::Instance> {
         let list = known(vec![modref(b"sodium bytes", "sodium-0.6.jar")]);
-        import_into(found, "Imported", take, out, &list, &AtomicBool::new(false), &|_, _| {})
+        import_into(found, "Imported", take, out, &list, &AtomicBool::new(false), &|_, _, _| {})
     }
 
     #[test]
@@ -450,7 +452,7 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         let found = farm(src.path());
         let stop = AtomicBool::new(true);
-        let err = import_into(&found, "X", Take::default(), out.path(), &known(Vec::new()), &stop, &|_, _| {}).unwrap_err();
+        let err = import_into(&found, "X", Take::default(), out.path(), &known(Vec::new()), &stop, &|_, _, _| {}).unwrap_err();
         assert!(err.chain().any(|c| c.downcast_ref::<mrpack::Refused>() == Some(&mrpack::Refused::Cancelled)));
         assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
     }
@@ -462,8 +464,8 @@ mod tests {
         let found = farm(src.path());
         let seen = std::sync::Mutex::new(Vec::new());
         let list = known(Vec::new());
-        import_into(&found, "X", Take::default(), out.path(), &list, &AtomicBool::new(false), &|d, t| seen.lock().unwrap().push((d, t))).unwrap();
-        let seen = seen.into_inner().unwrap();
+        import_into(&found, "X", Take::default(), out.path(), &list, &AtomicBool::new(false), &|_, d, t| seen.lock().unwrap().push((d, t))).unwrap();
+        let seen: Vec<(usize, usize)> = seen.into_inner().unwrap().into_iter().filter(|(_, t)| *t > 0).collect();
         assert!(seen.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(seen.iter().all(|(d, t)| d <= t));
     }

@@ -20,7 +20,7 @@ use crate::core::proxy::Fault;
 /// One report of the fleet, a game's mod or a frame reader.
 #[derive(Clone, Debug)]
 pub enum Report {
-    Preparing { batch: String, percent: u8 },
+    Preparing { batch: String, progress: crate::core::install::Progress },
     /// The game is installed; the accounts of `batch` wait in line to start.
     Prepared { batch: String },
     Launched { key: String, plain: bool },

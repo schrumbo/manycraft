@@ -1012,10 +1012,14 @@ pub(super) fn is_managed(managed: &HashMap<String, String>, name: &str, path: &P
 
 #[cfg(test)]
 fn sync_into(agent: &ureq::Agent, mods: &[ModRef], local: &[String], disabled: &[String], dir: &Path, ledger: &Path) -> Result<usize> {
-    sync_from(agent, None, mods, local, disabled, dir, ledger)
+    sync_from(agent, None, mods, local, disabled, dir, ledger, &|_, _| {})
 }
 
-fn sync_from(agent: &ureq::Agent, jars: Option<&Path>, mods: &[ModRef], local: &[String], disabled: &[String], dir: &Path, ledger: &Path) -> Result<usize> {
+/// Called with how many mod files are in place of how many the instance lists.
+pub type Progress<'a> = &'a (dyn Fn(usize, usize) + Sync);
+
+#[allow(clippy::too_many_arguments)]
+fn sync_from(agent: &ureq::Agent, jars: Option<&Path>, mods: &[ModRef], local: &[String], disabled: &[String], dir: &Path, ledger: &Path, progress: Progress) -> Result<usize> {
     let local_keys: HashSet<String> = local.iter().map(|name| name.to_lowercase()).collect();
     let off: HashSet<String> = disabled.iter().map(|name| name.to_lowercase()).collect();
     let mut keep = HashSet::new();
@@ -1034,7 +1038,17 @@ fn sync_from(agent: &ureq::Agent, jars: Option<&Path>, mods: &[ModRef], local: &
     keep.extend(local_keys);
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     place_local(local, &off, dir)?;
-    let fetched = pool()?.install(|| jobs.par_iter().map(|m| place(agent, jars, m, off.contains(&m.file_name.to_lowercase()), dir)).collect::<Result<Vec<_>>>())?;
+    let (total, placed) = (jobs.len(), std::sync::atomic::AtomicUsize::new(0));
+    progress(0, total);
+    let fetched = pool()?.install(|| {
+        jobs.par_iter()
+            .map(|m| {
+                let made = place(agent, jars, m, off.contains(&m.file_name.to_lowercase()), dir);
+                progress(placed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, total);
+                made
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
     let managed = read_ledger(ledger);
     for (name, file) in list_jars(dir)? {
         if keep.contains(&name) || name == super::fleet::COMPANION_FILE {
@@ -1214,7 +1228,7 @@ fn needs_fabric_api(instance: &Instance) -> bool {
 /// then deletes `.jar` files directly in the folder that are neither in the list nor in `local_mods`. Returns how many were downloaded.
 /// On Fabric and Quilt, Fabric API is added for the sync when the instance does not list it, since most of their mods need it.
 pub fn sync_mods(instance: &Instance) -> Result<usize> {
-    with_mods_lock(&instance.dir(), || sync_locked(&saved(instance)))
+    with_mods_lock(&instance.dir(), || sync_locked(&saved(instance), &|_, _| {}))
 }
 
 fn not_searching(instance_dir: &Path) -> Result<()> {
@@ -1237,7 +1251,7 @@ fn saved_in(dir: &Path, instance: &Instance) -> Instance {
     std::fs::read(dir.join("instance.json")).ok().and_then(|bytes| serde_json::from_slice::<Instance>(&bytes).ok()).filter(|b| b.id == instance.id).unwrap_or_else(|| instance.clone())
 }
 
-fn sync_locked(instance: &Instance) -> Result<usize> {
+fn sync_locked(instance: &Instance, progress: Progress) -> Result<usize> {
     let mut mods = instance.mods.clone();
     let mut local = instance.local_mods.clone();
     if needs_fabric_api(instance) {
@@ -1252,7 +1266,7 @@ fn sync_locked(instance: &Instance) -> Result<usize> {
             },
         }
     }
-    sync_from(&net::agent(None)?, Some(&jar_cache()), &mods, &local, &instance.disabled, &instance.mods_dir(), &instance.dir().join(LEDGER))
+    sync_from(&net::agent(None)?, Some(&jar_cache()), &mods, &local, &instance.disabled, &instance.mods_dir(), &instance.dir().join(LEDGER), progress)
 }
 
 fn fabric_api_on_disk(dir: &Path) -> Option<String> {
@@ -1280,11 +1294,11 @@ pub fn match_hashes(hashes: &[String]) -> Result<HashMap<String, ModRef>> {
 /// (local jars stay) and saves the instance. Returns how many files were downloaded.
 /// On any error `instance` and its saved file are unchanged. Call it only while no game of the instance
 /// runs: running games hold the old jars open, so the sync could not remove them.
-pub fn update_mods(instance: &mut Instance, selection: &[Update]) -> Result<usize> {
+pub fn update_mods(instance: &mut Instance, selection: &[Update], progress: Progress) -> Result<usize> {
     update_with(instance, selection, |next| {
         with_mods_lock(&next.dir(), || {
             not_searching(&next.dir())?;
-            let fetched = sync_locked(next)?;
+            let fetched = sync_locked(next, progress)?;
             super::instance::save(next)?;
             Ok(fetched)
         })

@@ -29,7 +29,8 @@ use super::forms::{self, Plain, Problem};
 const PROXY_TEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const CANNED_DELAY: Duration = Duration::from_millis(450);
-const CANNED_STEPS: usize = 8;
+const CANNED_APPLY_STEP: Duration = Duration::from_secs(4);
+pub(super) const CANNED_STEPS: usize = 8;
 
 static SAVING: Mutex<()> = Mutex::new(());
 
@@ -1083,7 +1084,7 @@ pub fn launcher_folder(folder: &Path) -> Vec<Library> {
 
 /// Imports `found` as a new instance of its own name; see `launchers::import`. A driven instance runs the same steps,
 /// then makes an empty instance of the same version and loader without reading the other launcher's files.
-pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<setup::Instance> {
+pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: mrpack::Progress) -> Result<setup::Instance> {
     if !drive::fenced("launcher import", found.key()) {
         return launchers::import(found, &found.name, take, cancel, progress);
     }
@@ -1091,7 +1092,7 @@ pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(
         if cancel.load(Ordering::SeqCst) {
             bail!(mrpack::Refused::Cancelled);
         }
-        progress(step, CANNED_STEPS);
+        progress(mrpack::Phase::Copying, step, CANNED_STEPS);
         std::thread::sleep(CANNED_DELAY);
     }
     saved(|| {
@@ -1108,7 +1109,7 @@ pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(
 
 /// Imports a `.mrpack`, Prism export or Prism instance folder as a new instance; see `mrpack::import`.
 /// A driven instance runs the same checks, then makes an empty one of the pack's name without downloading.
-pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<setup::Instance> {
+pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: mrpack::Progress) -> Result<setup::Instance> {
     if !drive::fenced("mrpack import", path.display()) {
         return mrpack::import(path, cancel, progress);
     }
@@ -1117,7 +1118,7 @@ pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: &(
         if cancel.load(Ordering::SeqCst) {
             bail!(mrpack::Refused::Cancelled);
         }
-        progress(step, CANNED_STEPS);
+        progress(mrpack::Phase::Copying, step, CANNED_STEPS);
         std::thread::sleep(CANNED_DELAY);
     }
     saved(|| {
@@ -1165,12 +1166,23 @@ pub fn mod_updates(made: &setup::Instance) -> Result<Vec<Update>> {
 /// Applies `selection` to the saved instance `id` as it is on disk now and returns it. While a game of it
 /// is `running` only its list changes; the files follow at the next start.
 pub fn apply_updates(id: &str, selection: &[Update], running: bool) -> Result<setup::Instance> {
+    apply_updates_counted(id, selection, running, &|_, _| {})
+}
+
+/// Like the update apply above, and reports how many mod files are in place of how many the instance lists.
+pub fn apply_updates_counted(id: &str, selection: &[Update], running: bool, progress: modrinth::Progress) -> Result<setup::Instance> {
     saved(|| {
         let mut b = setup::load_all()?.into_iter().find(|b| b.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diese Instanz gibt es nicht mehr.")))?;
-        if running || drive::fenced("modrinth apply", selection.len()) {
+        if running {
+            modrinth::update_mods_later(&mut b, selection)?;
+        } else if drive::fenced("modrinth apply", selection.len()) {
+            for done in 0..=selection.len() {
+                progress(done, selection.len());
+                std::thread::sleep(CANNED_APPLY_STEP);
+            }
             modrinth::update_mods_later(&mut b, selection)?;
         } else {
-            modrinth::update_mods(&mut b, selection)?;
+            modrinth::update_mods(&mut b, selection, progress)?;
         }
         Ok(b)
     })
