@@ -135,7 +135,7 @@ fn a_missing_options_file_the_game_recreates_never_reaches_the_sync_folder() {
     let p = w.peers(&[]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &a, &game, false));
-    fs::write(game.join("options.txt"), "version:4440\nfov:0.0\ngamma:0.5\n").unwrap();
+    save(&game.join("options.txt"), "version:4440\nfov:0.0\ngamma:0.5\n").unwrap();
     t.loaded("k1");
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
@@ -153,7 +153,7 @@ fn a_change_after_loading_reaches_the_sync_folder_and_the_next_start_of_another_
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &a, &game, true));
-    fs::write(game.join("options.txt"), "fov:0.5
+    save(&game.join("options.txt"), "fov:0.5
 ").unwrap();
     t.loaded("k1");
     t.options(&w.roots, &p, "k1", &values(&[("fov", "0.9")]));
@@ -182,9 +182,9 @@ fn a_removed_key_does_not_propagate() {
     let p = w.peers(&[]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &a, &game, false));
-    fs::write(game.join("options.txt"), "fov:0.5\ngamma:0.5\n").unwrap();
+    save(&game.join("options.txt"), "fov:0.5\ngamma:0.5\n").unwrap();
     t.loaded("k1");
-    fs::write(game.join("options.txt"), "fov:0.7\n").unwrap();
+    save(&game.join("options.txt"), "fov:0.7\n").unwrap();
     t.ended(&w.roots, &p, "k1", 1);
     let shared = w.mother("options.txt").unwrap();
     assert!(shared.contains("gamma:0.5") && shared.contains("fov:0.7"), "{shared}");
@@ -201,7 +201,7 @@ fn per_instance_keys_never_move() {
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &a, &game, true));
-    fs::write(game.join("options.txt"), "fov:0.5
+    save(&game.join("options.txt"), "fov:0.5
 fullscreen:false
 ").unwrap();
     t.loaded("k1");
@@ -383,7 +383,7 @@ fn nothing_outside_instance_folders_and_the_sync_folder_is_touched() {
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &b, &game, false));
     t.loaded("k1");
-    fs::write(game.join("options.txt"), "fov:0.4\n").unwrap();
+    save(&game.join("options.txt"), "fov:0.4\n").unwrap();
     t.ended(&w.roots, &p, "k1", 1);
     let first = versions_in(&w.mother, Item::Options).pop().unwrap();
     restore_in(&w.mother, &first).unwrap();
@@ -402,7 +402,7 @@ fn a_game_that_ends_before_loading_sends_nothing_up() {
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &a, &game, false));
-    fs::write(game.join("options.txt"), "fov:0.0\n").unwrap();
+    save(&game.join("options.txt"), "fov:0.0\n").unwrap();
     fs::write(game.join("servers.dat"), "").unwrap();
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
@@ -418,12 +418,12 @@ fn a_hidden_muted_batch_game_never_moves_its_background_values() {
     inbound_in(&w.mother, &a, false).unwrap();
     let template = read(&a.dir.join("options.txt"));
     let game = w.game(&a);
-    fs::write(game.join("options.txt"), &template).unwrap();
+    save(&game.join("options.txt"), &template).unwrap();
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &a, &game, true));
     t.loaded("k1");
-    fs::write(game.join("options.txt"), "renderDistance:2\nsoundCategory_master:0.0\n").unwrap();
+    save(&game.join("options.txt"), "renderDistance:2\nsoundCategory_master:0.0\n").unwrap();
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "renderDistance:12\nsoundCategory_master:1.0\n");
     assert_eq!(read(&a.dir.join("options.txt")), template);
@@ -598,9 +598,9 @@ fn options_of_games_before_1_13_move_neither_way() {
     let p = w.peers(&[]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &old, &game, false));
-    fs::write(game.join("options.txt"), "key_key.jump:57\n").unwrap();
+    save(&game.join("options.txt"), "key_key.jump:57\n").unwrap();
     t.loaded("k1");
-    fs::write(game.join("options.txt"), "key_key.jump:58\nlang:de_DE\n").unwrap();
+    save(&game.join("options.txt"), "key_key.jump:58\nlang:de_DE\n").unwrap();
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "key_key.jump:key.keyboard.space\n");
     let fresh = w.instance("Fresh", Sharing::NONE);
@@ -759,9 +759,9 @@ fn keys_a_game_adds_after_loading_never_reach_the_sync_folder() {
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k2", &a, &game, false));
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.5\n").unwrap();
     t.loaded("k2");
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
     t.ended(&w.roots, &p, "k2", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
 }
@@ -776,7 +776,7 @@ fn a_companion_game_shares_its_first_change_of_a_key_it_added_after_loading() {
     let p = w.peers(&[("k1", &a)]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, start("k1", &a, &game, true));
-    fs::write(game.join("options.txt"), "fov:0.5\n").unwrap();
+    save(&game.join("options.txt"), "fov:0.5\n").unwrap();
     t.loaded("k1");
     t.options(&w.roots, &p, "k1", &values(&[("renderDistance", "16")]));
     assert!(w.mother("options.txt").unwrap().contains("renderDistance:16"));
@@ -827,11 +827,11 @@ fn a_half_written_options_file_is_not_learned() {
     let p = w.peers(&[]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, Start { fresh: true, ..start("k1", &a, &game, false) });
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.5\n").unwrap();
     t.loaded("k1");
-    fs::write(game.join("options.txt"), "").unwrap();
+    save(&game.join("options.txt"), "").unwrap();
     t.tick(Instant::now());
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.7\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.7\n").unwrap();
     t.tick(Instant::now());
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
@@ -847,11 +847,11 @@ fn a_first_start_filling_in_its_defaults_after_loading_sends_nothing_up() {
     let p = w.peers(&[]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, Start { fresh: true, ..start("k1", &a, &game, false) });
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:12\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:12\n").unwrap();
     t.loaded("k1");
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
     t.tick(Instant::now());
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.9\nrenderDistance:16\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.9\nrenderDistance:16\n").unwrap();
     t.tick(Instant::now() + Duration::from_secs(120));
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.9\n");
@@ -867,11 +867,11 @@ fn a_first_start_shares_a_choice_made_right_after_it_saved_its_defaults() {
     let p = w.peers(&[]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, Start { fresh: true, ..start("k1", &a, &game, false) });
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:12\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:12\n").unwrap();
     t.loaded("k1");
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
     t.tick(Instant::now());
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.95\nrenderDistance:16\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.95\nrenderDistance:16\n").unwrap();
     t.tick(Instant::now());
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.95\n");
@@ -887,10 +887,21 @@ fn a_first_start_that_saves_nothing_on_its_own_shares_the_first_choice() {
     let p = w.peers(&[]);
     let mut t = w.tracker();
     t.started(&w.roots, &p, Start { fresh: true, ..start("k1", &a, &game, false) });
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:12\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:12\n").unwrap();
     t.loaded("k1");
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.9\nrenderDistance:12\n").unwrap();
+    save(&game.join("options.txt"), "version:5023\nfov:0.9\nrenderDistance:12\n").unwrap();
     t.tick(Instant::now() + Duration::from_secs(25));
     t.ended(&w.roots, &p, "k1", 1);
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.9\n");
+}
+
+fn save(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let before = fs::metadata(path).and_then(|m| m.modified()).ok();
+    fs::write(path, text)?;
+    if let Some(before) = before
+        && fs::metadata(path)?.modified()? <= before
+    {
+        fs::File::options().write(true).open(path)?.set_modified(before + Duration::from_millis(10))?;
+    }
+    Ok(())
 }

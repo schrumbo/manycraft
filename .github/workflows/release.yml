@@ -125,7 +125,8 @@ jobs:
           codesign --force --deep --sign - "$APP"
           ln -s /Applications dist/Applications
           DMG="Manycraft-$VERSION-macos-universal.dmg"
-          hdiutil create -volname Manycraft -srcfolder dist -ov -format UDZO "$DMG"
+          SIZE=$(( $(du -sm dist | cut -f1) * 2 + 64 ))m
+          hdiutil create -volname Manycraft -srcfolder dist -ov -fs HFS+ -size "$SIZE" -format UDZO "$DMG"
           shasum -a 256 "$DMG" > "$DMG.sha256"
       - name: Upload
         run: gh release upload "v$VERSION" Manycraft-*.dmg* --clobber
