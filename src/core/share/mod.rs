@@ -221,9 +221,9 @@ pub(crate) fn inbound_in(mother: &Mother, own: &Own, joining: bool) -> Result<()
     if !own.dir.is_dir() {
         return Ok(());
     }
-    let flags = flags_in(&own.dir);
     super::sync::with_templates(|| {
         let _held = mother.lock()?;
+        let flags = flags_in(&own.dir);
         let plan = kept(mother, |history| {
             let mut plan = Plan::default();
             if flags.options {
@@ -272,7 +272,14 @@ impl Plan {
         match (config, linked) {
             (true, false) => link_config(&path, &shared),
             (false, true) => unlink_config(&path, &shared),
-            _ => Ok(()),
+            (false, false) => {
+                let fresh = path.with_file_name(format!("{CONFIG}.own-new"));
+                if fs::symlink_metadata(&path).is_err() && fresh.is_dir() {
+                    fs::rename(&fresh, &path).with_context(|| format!("cannot move {} back", fresh.display()))?;
+                }
+                Ok(())
+            }
+            (true, true) => Ok(()),
         }
     }
 }
@@ -298,8 +305,12 @@ fn options_join(mother: &Mother, own: &Own, history: &mut History) -> Result<Opt
         return Ok(None);
     }
     history.backup(own, OPTIONS_FILE, &raw)?;
-    if usable && read_text(&mother.path(OPTIONS_FILE))?.filter(|t| keys::readable(t)).is_none() {
-        put_locked(mother, history, own, vec![(OPTIONS_FILE.to_owned(), shared.into_bytes())])?;
+    if usable {
+        let theirs = read_text(&mother.path(OPTIONS_FILE))?.filter(|t| keys::readable(t));
+        let filled = theirs.as_deref().map_or_else(|| shared.clone(), |t| keys::merge(&shared, t));
+        if theirs.as_deref().is_none_or(|t| keys::map(t) != keys::map(&filled)) {
+            put_locked(mother, history, own, vec![(OPTIONS_FILE.to_owned(), filled.into_bytes())])?;
+        }
     }
     let rest = if usable { keys::apart(&text) } else { String::new() };
     Ok(Some((!rest.is_empty()).then_some(rest)))
@@ -324,8 +335,16 @@ fn config_join(mother: &Mother, own: &Own, history: &mut History) -> Result<()> 
     for (rel, bytes) in &mine {
         history.backup(own, rel, bytes)?;
     }
-    if !mine.is_empty() && files_in(&mother.path(CONFIG))?.is_empty() {
-        put_locked(mother, history, own, mine)?;
+    let shared = mother.path(CONFIG);
+    let missing: Vec<(String, Vec<u8>)> = mine
+        .into_iter()
+        .filter(|(rel, _)| {
+            let path = mother.path(rel);
+            fs::symlink_metadata(&path).is_err() && path.ancestors().skip(1).take_while(|p| p.starts_with(&shared)).all(|p| fs::metadata(p).map_or(true, |m| m.is_dir()))
+        })
+        .collect();
+    if !missing.is_empty() {
+        put_locked(mother, history, own, missing)?;
     }
     Ok(())
 }
@@ -467,7 +486,9 @@ pub(crate) fn set_in(mother: &Mother, root: &Path, id: &str, sharing: Sharing, r
     }
     made.sync = sharing;
     let made = save(root, made)?;
-    inbound_in(mother, &own, running)?;
+    if let Err(e) = inbound_in(mother, &own, running) {
+        eprintln!("{} switches its shared files at the next start: {e:#}", own.name);
+    }
     Ok(made)
 }
 
@@ -510,11 +531,18 @@ pub(crate) fn turn_on_in(mother: &Mother, root: &Path, ids: &[String], running: 
         .collect();
     chosen.sort_by(|a, b| b.2.cmp(&a.2));
     let mut done = Vec::new();
+    let mut failed = false;
     for (mut made, dir, _) in chosen {
         let own = Own { id: made.id.clone(), name: made.name.clone(), dir };
         made.sync = Sharing::ALL;
         done.push(save(root, made)?);
-        inbound_in(mother, &own, running.contains(&own.id))?;
+        if failed {
+            continue;
+        }
+        if let Err(e) = inbound_in(mother, &own, running.contains(&own.id)) {
+            eprintln!("{} switches its shared files at the next start: {e:#}", own.name);
+            failed = true;
+        }
     }
     Ok(done)
 }
@@ -638,6 +666,9 @@ fn mend_config(mother: &Mother, back: &[(String, Vec<u8>, Option<Vec<u8>>)], see
                 let path = mother.path(rel);
                 if read_file(&path)? != *broke {
                     continue;
+                }
+                if let Some(broke) = broke {
+                    history.snapshot(rel, broke)?;
                 }
                 net::write_atomic(&path, good)?;
                 put.push(rel.clone());

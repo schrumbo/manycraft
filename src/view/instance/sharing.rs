@@ -129,17 +129,18 @@ fn item_row(store: Store, pending: State<Option<Shared>>, id: &str, now: Shared,
     line.into_element()
 }
 
-/// What happened after `item` was turned on or off, in words.
+/// What happened after `item` was turned on or off, short enough for a toast with an undo.
 fn outcome(item: Item, on: bool, running: bool) -> String {
-    let done = match (item, on) {
-        (Item::Options, true) => tr("Spiel-Optionen sind jetzt geteilt. Die bisherige eigene Datei liegt unter „Frühere Stände“."),
-        (Item::Config, true) => tr("Mod-Einstellungen sind jetzt geteilt. Die bisherigen eigenen liegen unter „Frühere Stände“."),
-        (Item::Servers, true) => tr("Die Serverliste ist jetzt geteilt. Die bisherige eigene liegt unter „Frühere Stände“."),
-        (Item::Options, false) => tr("Spiel-Optionen sind jetzt eine eigene Datei, kopiert vom gemeinsamen Stand."),
-        (Item::Config, false) => tr("Mod-Einstellungen sind jetzt ein eigener Ordner, kopiert vom gemeinsamen Stand."),
-        (Item::Servers, false) => tr("Die Serverliste ist jetzt eine eigene Datei, kopiert vom gemeinsamen Stand."),
-    };
-    if running { format!("{done} {}", tr("Laufende Spiele übernehmen das beim nächsten Start.")) } else { done }
+    match (item, on, running) {
+        (_, true, true) => tr("Ab dem nächsten Start geteilt."),
+        (_, false, true) => tr("Eigene Kopie ab dem nächsten Start."),
+        (Item::Options, true, false) => tr("Spiel-Optionen werden geteilt."),
+        (Item::Config, true, false) => tr("Mod-Einstellungen werden geteilt."),
+        (Item::Servers, true, false) => tr("Die Serverliste wird geteilt."),
+        (Item::Options, false, false) => tr("Eigene Kopie der Spiel-Optionen."),
+        (Item::Config, false, false) => tr("Eigene Kopie der Mod-Einstellungen."),
+        (Item::Servers, false, false) => tr("Eigene Kopie der Serverliste."),
+    }
 }
 
 fn set(store: Store, mut pending: State<Option<Shared>>, id: String, before: Shared, next: Shared, item: Item, running: bool) {

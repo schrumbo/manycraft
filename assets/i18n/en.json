@@ -2337,13 +2337,6 @@
   "Eigene Datei, nur für diese Instanz.": "Own file, for this instance only.",
   "Grafik, Steuerung und Ton. Fenster und Ressourcenpakete bleiben pro Instanz.": "Graphics, controls and sound. Window and resource packs stay per instance.",
   "Der Ordner „config“ aller Mods.": "The “config” folder of every mod.",
-  "Spiel-Optionen sind jetzt geteilt. Die bisherige eigene Datei liegt unter „Frühere Stände“.": "Game options are shared now. The previous own file is under “Earlier versions”.",
-  "Mod-Einstellungen sind jetzt geteilt. Die bisherigen eigenen liegen unter „Frühere Stände“.": "Mod settings are shared now. The previous own ones are under “Earlier versions”.",
-  "Die Serverliste ist jetzt geteilt. Die bisherige eigene liegt unter „Frühere Stände“.": "The server list is shared now. The previous own one is under “Earlier versions”.",
-  "Spiel-Optionen sind jetzt eine eigene Datei, kopiert vom gemeinsamen Stand.": "Game options are an own file now, copied from the shared one.",
-  "Mod-Einstellungen sind jetzt ein eigener Ordner, kopiert vom gemeinsamen Stand.": "Mod settings are an own folder now, copied from the shared one.",
-  "Die Serverliste ist jetzt eine eigene Datei, kopiert vom gemeinsamen Stand.": "The server list is an own file now, copied from the shared one.",
-  "Laufende Spiele übernehmen das beim nächsten Start.": "Running games take this on at their next start.",
   "Es gibt jede Datei nur einmal. Alle teilenden Instanzen lesen und ändern dieselbe. Bevor ein Spiel startet, hebt Manycraft den Stand auf und holt ihn zurück, wenn der Start ihn zurücksetzt.": "Each file exists only once. Every sharing instance reads and changes the same one. Before a game starts, Manycraft keeps the current version and brings it back if the start resets it.",
   "Zurückholen macht einen Stand wieder zum gemeinsamen; der jetzige bleibt hier.": "Restoring makes a version the shared one again; the current one stays here.",
   "Noch teilt keine Instanz.": "No instance shares it yet.",
@@ -2352,5 +2345,13 @@
   "Bearbeiten im Spiel unter Mehrspieler.": "Edit it in the game under Multiplayer.",
   "Entsteht, sobald ein teilendes Spiel etwas speichert.": "Appears once a sharing game saves something.",
   "Zurückgeholt. Mod-Einstellungen gelten sofort, Spiel-Optionen und Serverliste ab dem nächsten Start.": "Restored. Mod settings apply right away, game options and the server list from the next start.",
-  "Der Ordner „config“ der Instanz ist gerade in Benutzung. Schließ das Spiel und versuch es noch einmal.": "The instance’s “config” folder is in use. Close the game and try again."
+  "Der Ordner „config“ der Instanz ist gerade in Benutzung. Schließ das Spiel und versuch es noch einmal.": "The instance’s “config” folder is in use. Close the game and try again.",
+  "Ab dem nächsten Start geteilt.": "Shared from the next start.",
+  "Eigene Kopie ab dem nächsten Start.": "Own copy from the next start.",
+  "Spiel-Optionen werden geteilt.": "Game options are shared.",
+  "Mod-Einstellungen werden geteilt.": "Mod settings are shared.",
+  "Die Serverliste wird geteilt.": "The server list is shared.",
+  "Eigene Kopie der Spiel-Optionen.": "Own copy of the game options.",
+  "Eigene Kopie der Mod-Einstellungen.": "Own copy of the mod settings.",
+  "Eigene Kopie der Serverliste.": "Own copy of the server list."
 }

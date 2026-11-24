@@ -217,8 +217,9 @@ fn file_line(item: Item, who: &[String], present: bool) -> Element {
     }
     let path = share::folder().join(file_of(item));
     let why = (!present).then(|| tr("Entsteht, sobald ein teilendes Spiel etwas speichert."));
+    let hint = why.as_ref().map_or_else(|| names.clone(), |why| format!("{names} {why}"));
     let open = Button::new(format!("settings.share.file.{key}.open"), if item == Item::Config { tr("Ordner öffnen") } else { tr("Öffnen") }).plain().disabled(why).on_press(move |_| native::open(&path));
-    line = line.hint(names).control(open);
+    line = line.hint(hint).control(open);
     line.into_element()
 }
 

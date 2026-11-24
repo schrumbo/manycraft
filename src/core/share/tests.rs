@@ -1085,3 +1085,79 @@ fn a_sharing_instance_keeps_only_its_own_keys_and_tells_every_game() {
     let again = crate::core::sync::instance_options(&w.roots, &p, &a.id, &values(&[("fov", "0.9")])).unwrap();
     assert!(again.is_empty());
 }
+
+#[test]
+fn mod_settings_only_one_instance_has_join_the_shared_folder() {
+    let w = world();
+    w.put_mother("config/sodium.json", "{\"shared\":1}");
+    let b = w.instance("B", Sharing::NONE);
+    fs::create_dir_all(b.dir.join("config")).unwrap();
+    fs::write(b.dir.join("config").join("sodium.json"), "{\"mine\":1}").unwrap();
+    fs::write(b.dir.join("config").join("minimap.txt"), "zoom=3").unwrap();
+    set_in(&w.mother, &w.roots.instances, &b.id, Sharing::ALL, false).unwrap();
+    assert!(is_link(&b.dir.join("config")));
+    assert_eq!(w.mother("config/sodium.json").unwrap(), "{\"shared\":1}");
+    assert_eq!(w.mother("config/minimap.txt").unwrap(), "zoom=3");
+    assert!(own_files(&w, Item::Config).contains(&b"{\"mine\":1}".to_vec()));
+}
+
+#[test]
+fn option_keys_only_one_instance_has_join_the_shared_file() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let b = w.instance("B", Sharing::NONE);
+    fs::write(b.dir.join("options.txt"), "fov:0.1\nkey_key.minimap:key.keyboard.m\n").unwrap();
+    set_in(&w.mother, &w.roots.instances, &b.id, Sharing::ALL, false).unwrap();
+    let shared = w.mother("options.txt").unwrap();
+    assert!(shared.contains("fov:0.5") && shared.contains("key_key.minimap:key.keyboard.m"), "{shared}");
+}
+
+#[test]
+fn after_loading_a_deleted_or_cleared_mod_setting_is_a_choice_and_a_broken_one_comes_back_kept() {
+    let w = world();
+    w.put_mother("config/a.json", "{\"a\":1}");
+    w.put_mother("config/b.json", "{\"b\":1}");
+    w.put_mother("config/c.json", "{\"c\":1}");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[("k1", &a)]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, start("k1", &a, &game, true));
+    t.loaded("k1");
+    fs::remove_file(a.dir.join("config").join("a.json")).unwrap();
+    fs::write(a.dir.join("config").join("b.json"), "[]").unwrap();
+    fs::write(a.dir.join("config").join("c.json"), "{\"c\":").unwrap();
+    scan_now(&mut t);
+    assert!(w.mother("config/a.json").is_none());
+    assert_eq!(w.mother("config/b.json").unwrap(), "[]");
+    assert_eq!(w.mother("config/c.json").unwrap(), "{\"c\":1}");
+    let kept: Vec<Vec<u8>> = versions_in(&w.mother, Item::Config).iter().flat_map(|v| history::files(&w.mother, v).unwrap()).map(|(_, b)| b).collect();
+    assert!(kept.contains(&b"{\"c\":".to_vec()));
+    t.ended(&w.roots, &p, "k1", 1);
+}
+
+#[test]
+fn a_backup_bigger_than_the_cap_stays_in_the_history_it_was_kept_for() {
+    let w = world();
+    let a = w.instance("A", Sharing::NONE);
+    kept(&w.mother, |history| {
+        history.cap = 4;
+        history.backup(&a, "config/big.json", b"0123456789")
+    })
+    .unwrap();
+    assert!(own_files(&w, Item::Config).contains(&b"0123456789".to_vec()));
+}
+
+#[test]
+fn a_config_link_that_cannot_be_made_now_still_saves_the_choice_for_the_next_start() {
+    let w = world();
+    w.put_mother("config", "not a folder");
+    let a = w.instance("A", Sharing::NONE);
+    fs::create_dir_all(a.dir.join("config")).unwrap();
+    fs::write(a.dir.join("config").join("mine.json"), "{\"m\":1}").unwrap();
+    let made = set_in(&w.mother, &w.roots.instances, &a.id, Sharing::ALL, true).unwrap();
+    assert_eq!(made.sync, Sharing::ALL);
+    assert!(!is_link(&a.dir.join("config")));
+    assert_eq!(read(&a.dir.join("config").join("mine.json")), "{\"m\":1}");
+}
