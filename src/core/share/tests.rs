@@ -871,10 +871,10 @@ fn a_first_start_shares_a_choice_made_right_after_it_saved_its_defaults() {
     t.loaded("k1");
     fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
     t.tick(Instant::now());
-    fs::write(game.join("options.txt"), "version:5023\nfov:0.9\nrenderDistance:16\n").unwrap();
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.95\nrenderDistance:16\n").unwrap();
     t.tick(Instant::now());
     t.ended(&w.roots, &p, "k1", 1);
-    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.9\n");
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.95\n");
 }
 
 #[test]
