@@ -8,6 +8,7 @@ pub mod chip;
 pub mod drop;
 pub mod face;
 pub mod field;
+pub mod grip;
 pub mod group;
 pub mod markdown;
 pub mod menu;

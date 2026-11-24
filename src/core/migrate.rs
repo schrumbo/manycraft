@@ -94,7 +94,8 @@ fn pending(batches: &Path) -> Result<Vec<(String, Value)>> {
         }
         let bytes = fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
         let Ok(value) = serde_json::from_slice::<Value>(&bytes) else { continue };
-        let migrated = value.get("instance_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+        let filled = |key: &str| value.get(key).and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+        let migrated = filled("instance_id") || filled("headless_version");
         if !migrated && value.get("id").and_then(Value::as_str) == Some(id.as_str()) {
             found.push((id, value));
         }
