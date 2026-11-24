@@ -1007,7 +1007,7 @@ impl Fleet {
             if !run.headless
                 && let Ok(dir) = instance::existing(&run.instance)
             {
-                let start = share::Start { key: key.clone(), instance: run.instance.clone(), name: share::name_in(&dir), dir, game: run.game_dir.clone(), pid, companion: !run.plain, at: SystemTime::now(), adopted: true };
+                let start = share::Start { key: key.clone(), instance: run.instance.clone(), name: share::name_in(&dir), dir, game: run.game_dir.clone(), pid, companion: !run.plain, at: SystemTime::now(), adopted: true, fresh: false };
                 let _ = self.notes.send(sync::Note::Started(start));
             }
             adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid, plain: run.plain, headless: run.headless });
@@ -1219,6 +1219,7 @@ impl Fleet {
         sync::register(&self.games, &key, &target.instance.id, account.id);
         let token = self.ipc.register(&key);
         let at = SystemTime::now();
+        let fresh = !target.instance.game_dir(account.id).join(OPTIONS_FILE).is_file();
         let child = launch(account, &key, &token).inspect_err(|_| {
             self.ipc.unregister(&key);
             lock(&self.reserved).remove(&key);
@@ -1266,7 +1267,7 @@ impl Fleet {
         };
         self.insert(key.clone(), instance);
         if !target.connection_only() {
-            let start = share::Start { key: key.clone(), instance: target.instance.id.clone(), name: target.instance.name.clone(), dir: target.instance.dir(), game: game_dir, pid, companion: !plain, at, adopted: false };
+            let start = share::Start { key: key.clone(), instance: target.instance.id.clone(), name: target.instance.name.clone(), dir: target.instance.dir(), game: game_dir, pid, companion: !plain, at, adopted: false, fresh };
             let _ = self.notes.send(sync::Note::Started(start));
         }
         Ok(key)

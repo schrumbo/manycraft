@@ -85,7 +85,7 @@ impl World {
 }
 
 fn start(key: &str, own: &Own, game: &Path, companion: bool) -> Start {
-    Start { key: key.into(), instance: own.id.clone(), name: own.name.clone(), dir: own.dir.clone(), game: game.to_path_buf(), pid: 1, companion, at: SystemTime::now(), adopted: false }
+    Start { key: key.into(), instance: own.id.clone(), name: own.name.clone(), dir: own.dir.clone(), game: game.to_path_buf(), pid: 1, companion, at: SystemTime::now(), adopted: false, fresh: false }
 }
 
 fn values(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -773,4 +773,24 @@ fn keys_a_game_adds_after_loading_never_reach_the_sync_folder() {
     assert_eq!(w.mother("options.txt").unwrap(), "fov:0.5\n");
     t.options(&w.roots, &p, "k1", &values(&[("cloudRange", "32")]));
     assert!(w.mother("options.txt").unwrap().contains("cloudRange:32"));
+}
+
+#[test]
+fn a_first_start_filling_in_its_defaults_after_loading_sends_nothing_up() {
+    let w = world();
+    w.put_mother("options.txt", "fov:0.5\n");
+    let a = w.instance("A", Sharing::ALL);
+    inbound_in(&w.mother, &a, false).unwrap();
+    let game = w.game(&a);
+    let p = w.peers(&[]);
+    let mut t = w.tracker();
+    t.started(&w.roots, &p, Start { fresh: true, ..start("k1", &a, &game, false) });
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:12\n").unwrap();
+    t.loaded("k1");
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.5\nrenderDistance:16\n").unwrap();
+    t.tick(Instant::now());
+    fs::write(game.join("options.txt"), "version:5023\nfov:0.9\nrenderDistance:16\n").unwrap();
+    t.tick(Instant::now() + Duration::from_secs(120));
+    t.ended(&w.roots, &p, "k1", 1);
+    assert_eq!(w.mother("options.txt").unwrap(), "fov:0.9\n");
 }

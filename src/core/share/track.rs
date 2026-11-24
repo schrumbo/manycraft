@@ -13,6 +13,8 @@ use crate::core::sync::{self, OPTIONS_FILE, Peers, Roots, SERVERS_FILE};
 
 const SCAN_EVERY: Duration = Duration::from_secs(3);
 const SHOWN_GRACE: Duration = Duration::from_secs(180);
+/// How long after loading a game's first start keeps writing its own defaults.
+const FRESH_GRACE: Duration = Duration::from_secs(60);
 const LOG_STEP: u64 = 4 * 1024 * 1024;
 const LOADED_MARKS: [&str; 2] = ["Sound engine started", "Error starting SoundSystem"];
 
@@ -29,6 +31,8 @@ pub(crate) struct Start {
     pub at: SystemTime,
     /// A game an earlier manager started, long past loading.
     pub adopted: bool,
+    /// The game folder had no options file of its own: the game fills in its first-start defaults after loading.
+    pub fresh: bool,
 }
 
 impl Start {
@@ -50,6 +54,14 @@ struct Base {
     options: BTreeMap<String, String>,
     servers: Option<Vec<u8>>,
     seen: Option<(u64, Option<SystemTime>)>,
+    at: Instant,
+}
+
+impl Base {
+    /// Whether what the game writes now is still its own first-start setup rather than a choice.
+    fn settling(&self, start: &Start, now: Instant) -> bool {
+        start.fresh && now.saturating_duration_since(self.at) < FRESH_GRACE
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,7 +114,7 @@ impl Tracker {
         let seen = file_stamp(&path);
         let options = read_text(&path).ok().flatten().map(|t| keys::map(&t)).unwrap_or_default();
         let servers = read_file(&game.start.game.join(SERVERS_FILE)).ok().flatten();
-        game.base = Some(Base { options, servers, seen });
+        game.base = Some(Base { options, servers, seen, at: Instant::now() });
         let instance = game.start.instance.clone();
         let dir = game.start.dir.clone();
         let waiting = self.games.values().any(|g| g.start.instance == instance && g.base.is_none());
@@ -119,7 +131,7 @@ impl Tracker {
         if let Err(e) = sync::instance_options(roots, peers, &start.instance, values) {
             eprintln!("the options of {} were not kept: {e:#}", start.name);
         }
-        let mine = keys::changed(&base.options, values);
+        let mine = if base.settling(&game.start, Instant::now()) { BTreeMap::new() } else { keys::changed(&base.options, values) };
         base.options.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
         if mine.is_empty() || !flags_in(&start.dir).options {
             return;
@@ -228,7 +240,8 @@ impl Tracker {
                 continue;
             }
             if let Some(base) = &mut game.base {
-                learn_defaults(&game.start.game.join(OPTIONS_FILE), base);
+                let settling = base.settling(&game.start, now);
+                learn_defaults(&game.start.game.join(OPTIONS_FILE), base, settling);
                 continue;
             }
             if game.shown.is_none() && shown(game.start.pid) {
@@ -285,8 +298,8 @@ impl Tracker {
 }
 
 /// Takes the keys the game added to its options file since `base` saw it as defaults it filled in: a later change of
-/// one of them is a choice that flows up, the key appearing is not.
-fn learn_defaults(path: &Path, base: &mut Base) {
+/// one of them is a choice that flows up, the key appearing is not. While `settling`, every value counts as a default.
+fn learn_defaults(path: &Path, base: &mut Base, settling: bool) {
     let now = file_stamp(path);
     if now == base.seen {
         return;
@@ -294,7 +307,11 @@ fn learn_defaults(path: &Path, base: &mut Base) {
     base.seen = now;
     let Ok(Some(text)) = read_text(path) else { return };
     for (k, v) in keys::map(&text) {
-        base.options.entry(k).or_insert(v);
+        if settling {
+            base.options.insert(k, v);
+        } else {
+            base.options.entry(k).or_insert(v);
+        }
     }
 }
 
