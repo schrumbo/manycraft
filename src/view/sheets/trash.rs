@@ -92,7 +92,7 @@ fn blocked(store: Store, item: &Item) -> Option<String> {
     match &item.what {
         What::Reset(None) | What::Mods(None) => Some(tr("Dafür fehlen die Angaben, was zurückgelegt werden soll.")),
         What::Instance => None,
-        What::Batch if instance_dir(store, &item.instance).is_none() => Some(tr("Die Instanz dieses Batches gibt es nicht mehr.")),
+        What::Batch if !item.instance.is_empty() && instance_dir(store, &item.instance).is_none() => Some(tr("Die Instanz dieses Batches gibt es nicht mehr.")),
         What::Batch => None,
         _ if instance_dir(store, &item.instance).is_none() => Some(tr("Diese Instanz gibt es nicht mehr.")),
         What::Reset(Some(_)) | What::File { taken: true, .. } if running(store, &item.instance) => Some(tr("Stoppe zuerst die laufenden Spiele.")),

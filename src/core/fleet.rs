@@ -10,7 +10,7 @@ use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hickory_resolver::TokioResolver;
@@ -26,6 +26,7 @@ use super::install::{self, Installed};
 use super::launch::{self, LaunchSpec};
 use super::options::LaunchOptions;
 use super::proxy::{self, Kind};
+use super::share;
 use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
 use super::{adopt, auth, gpu, headless, ipc, javas, lock, net, paths, scrub, stagger};
 
@@ -37,9 +38,12 @@ pub const COMPANION_FILE: &str = "manycraft-companion.jar";
 
 pub(super) const DEFAULT_PORT: u16 = 25565;
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
-const SRV_TIMEOUT: Duration = Duration::from_secs(1);
+const SRV_TIMEOUT: Duration = Duration::from_secs(3);
 const RESOLVE_CACHE: Duration = Duration::from_secs(60);
+const RESOLVE_RETRY: Duration = Duration::from_secs(5);
+const DNS_ATTEMPT: Duration = Duration::from_secs(1);
 const REAP_INTERVAL: Duration = Duration::from_millis(500);
+const EXITS_WAIT: Duration = Duration::from_secs(40);
 /// How long a stopped game may take to save and quit before it is ended.
 const STOP_GRACE: Duration = Duration::from_secs(30);
 const LINKED: [&str; 5] = ["mods", "config", "resourcepacks", "shaderpacks", "datapacks"];
@@ -95,6 +99,13 @@ impl Target {
         Self { instance: instance.clone(), batch: Some(batch.clone()), quick: None }
     }
 
+    /// A headless `batch` that plays no instance: a stand-in without a folder, carrying only the version it speaks.
+    pub fn connection(batch: &Batch) -> Self {
+        let mut stand_in = Instance::new(&batch.name, batch.connection_version(), Loader::Vanilla);
+        stand_in.id.clear();
+        Self { instance: stand_in, batch: Some(batch.clone()), quick: None }
+    }
+
     /// `instance` played alone.
     pub fn solo(instance: &Instance) -> Self {
         Self { instance: instance.clone(), batch: None, quick: None }
@@ -116,6 +127,11 @@ impl Target {
     /// Memory each game gets.
     pub fn memory_mb(&self) -> u32 {
         self.batch.as_ref().map_or_else(|| self.instance.memory(), |b| b.memory(self.instance.memory()))
+    }
+
+    /// Memory each game starts with, never above [`Target::memory_mb`]; `None` leaves the start to Java.
+    pub fn memory_min_mb(&self) -> Option<u32> {
+        self.instance.memory_min().map(|min| min.min(self.memory_mb()))
     }
 
     fn server(&self) -> Option<&str> {
@@ -147,8 +163,12 @@ impl Target {
         self.batch.as_ref().is_some_and(|b| b.mode == RunMode::Connection)
     }
 
+    /// How its games answer a server's resource packs. Connection-only accounts have nobody to ask, so they accept unless the batch declines.
     fn packs(&self) -> Packs {
-        self.batch.as_ref().map_or(Packs::Ask, |b| b.packs)
+        match self.batch.as_ref().map_or(Packs::Ask, |b| b.packs) {
+            Packs::Ask if self.connection_only() => Packs::Accept,
+            chosen => chosen,
+        }
     }
 }
 
@@ -320,6 +340,7 @@ fn copy_options(template: &Path, dest: &Path) -> Result<()> {
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", template.display())),
     };
     let existing = fs::read_to_string(dest).ok();
+    share::writable(dest);
     net::write_atomic(dest, merge_options(&text, existing.as_deref(), PER_INSTANCE_KEYS).as_bytes())
 }
 
@@ -375,37 +396,81 @@ fn early_window_off(text: &str) -> String {
 "
 }
 
-/// The addresses of `server`, with its SRV record when it names no port; cached for a while.
+/// Where a server is and what a client says it connects to: vanilla's `ConnectScreen` sends the SRV record's target
+/// (as the DNS gives it, with its closing dot) and port in the handshake, otherwise the address as typed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    pub host: String,
+    pub port: u16,
+    pub addrs: Vec<SocketAddr>,
+}
+
+/// The addresses of `server`, with its SRV record when it names no other port than the default; cached for a while.
 pub(crate) fn resolve_all(server: &str) -> Result<Vec<SocketAddr>> {
+    resolve_server(server).map(|r| r.addrs)
+}
+
+/// [`resolve_all`] with the host and port a handshake to `server` carries.
+pub(crate) fn resolve_server(server: &str) -> Result<Resolved> {
     static RESOLVER: OnceLock<Resolver<SystemDns>> = OnceLock::new();
     RESOLVER.get_or_init(|| Resolver::new(SystemDns::default())).resolve(server, Instant::now())
 }
 
 trait Lookup {
+    /// The SRV target and port of `name`; `None` when the domain has no such record, an error when the lookup failed.
     fn srv(&self, name: &str, deadline: Instant) -> Result<Option<(String, u16)>>;
     fn ips(&self, host: &str, deadline: Instant) -> Result<Vec<IpAddr>>;
 }
 
+struct Entry {
+    until: Instant,
+    found: std::result::Result<Resolved, String>,
+}
+
+impl Entry {
+    fn answer(&self) -> Result<Resolved> {
+        self.found.clone().map_err(|e| anyhow!(e))
+    }
+}
+
 struct Resolver<L> {
     lookup: L,
-    cache: Mutex<HashMap<String, (Instant, Vec<SocketAddr>)>>,
+    cache: Mutex<HashMap<String, Entry>>,
+    turns: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl<L: Lookup> Resolver<L> {
     fn new(lookup: L) -> Self {
-        Self { lookup, cache: Mutex::default() }
+        Self { lookup, cache: Mutex::default(), turns: Mutex::default() }
     }
 
-    fn resolve(&self, server: &str, now: Instant) -> Result<Vec<SocketAddr>> {
+    /// One lookup per server at a time, so fifty accounts that reconnect together share one answer, a failed one too,
+    /// instead of queueing for the resolver until their deadlines pass. A failed lookup never replaces what an earlier one
+    /// found, and an answer made without SRV or a failure is kept only briefly.
+    fn resolve(&self, server: &str, now: Instant) -> Result<Resolved> {
         let key = server.trim().to_ascii_lowercase();
-        if let Some((at, addrs)) = lock(&self.cache).get(&key)
-            && now.saturating_duration_since(*at) < RESOLVE_CACHE
-        {
-            return Ok(addrs.clone());
+        if let Some(entry) = self.fresh(&key, now) {
+            return entry.answer();
         }
-        let addrs = resolve_with(&self.lookup, server, now)?;
-        lock(&self.cache).insert(key, (now, addrs.clone()));
-        Ok(addrs)
+        let turn = Arc::clone(lock(&self.turns).entry(key.clone()).or_default());
+        let _turn = lock(&turn);
+        let now = now.max(Instant::now());
+        if let Some(entry) = self.fresh(&key, now) {
+            return entry.answer();
+        }
+        let kept = lock(&self.cache).get(&key).and_then(|e| e.found.clone().ok());
+        let entry = match resolve_with(&self.lookup, server, now) {
+            Ok((resolved, true)) => Entry { until: now + RESOLVE_CACHE, found: Ok(resolved) },
+            Ok((resolved, false)) => Entry { until: now + RESOLVE_RETRY, found: Ok(kept.unwrap_or(resolved)) },
+            Err(e) => Entry { until: now + RESOLVE_RETRY, found: kept.ok_or_else(|| format!("{e:#}")) },
+        };
+        let answer = entry.answer();
+        lock(&self.cache).insert(key, entry);
+        answer
+    }
+
+    fn fresh(&self, key: &str, now: Instant) -> Option<Entry> {
+        lock(&self.cache).get(key).filter(|e| now < e.until).map(|e| Entry { until: e.until, found: e.found.clone() })
     }
 }
 
@@ -443,23 +508,36 @@ pub fn server_name(address: &str) -> String {
     }
 }
 
-fn resolve_with(lookup: &impl Lookup, server: &str, start: Instant) -> Result<Vec<SocketAddr>> {
+/// The addresses of `server` and whether the SRV lookup, when it was due, got an answer. Without one the typed host and
+/// port stand in, as in the game.
+fn resolve_with(lookup: &impl Lookup, server: &str, start: Instant) -> Result<(Resolved, bool)> {
     let (host, port) = split_server(server)?;
+    let port = port.unwrap_or(DEFAULT_PORT);
     if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok(vec![SocketAddr::new(ip, port.unwrap_or(DEFAULT_PORT))]);
+        return Ok((Resolved { host, port, addrs: vec![SocketAddr::new(ip, port)] }, true));
     }
-    let (target, port) = match port {
-        Some(port) => (host, port),
-        None => lookup.srv(&format!("_minecraft._tcp.{host}"), start + SRV_TIMEOUT).ok().flatten().unwrap_or((host, DEFAULT_PORT)),
+    let mut complete = true;
+    let (target, target_port) = if port == DEFAULT_PORT {
+        match lookup.srv(&format!("_minecraft._tcp.{host}"), start + SRV_TIMEOUT) {
+            Ok(Some(found)) => found,
+            Ok(None) => (host.clone(), port),
+            Err(_) => {
+                complete = false;
+                (host.clone(), port)
+            }
+        }
+    } else {
+        (host.clone(), port)
     };
-    if let Ok(ip) = target.parse::<IpAddr>() {
-        return Ok(vec![SocketAddr::new(ip, port)]);
-    }
-    let addrs: Vec<SocketAddr> = lookup.ips(&target, start + RESOLVE_TIMEOUT)?.into_iter().map(|ip| SocketAddr::new(ip, port)).collect();
+    let name = target.trim_end_matches('.');
+    let addrs: Vec<SocketAddr> = match name.parse::<IpAddr>() {
+        Ok(ip) => vec![SocketAddr::new(ip, target_port)],
+        Err(_) => lookup.ips(name, Instant::now().max(start) + RESOLVE_TIMEOUT)?.into_iter().map(|ip| SocketAddr::new(ip, target_port)).collect(),
+    };
     if addrs.is_empty() {
-        bail!("{target} has no address");
+        bail!("{name} has no address");
     }
-    Ok(addrs)
+    Ok((Resolved { host: target, port: target_port, addrs }, complete))
 }
 
 #[derive(Default)]
@@ -493,7 +571,7 @@ impl Dns {
         let all = config.name_servers().to_vec();
         let usable: Vec<_> = all.iter().filter(|n| usable_nameserver(n.ip)).cloned().collect();
         let config = ResolverConfig::from_parts(config.domain().cloned(), config.search().to_vec(), if usable.is_empty() { all } else { usable });
-        options.timeout = SRV_TIMEOUT;
+        options.timeout = DNS_ATTEMPT;
         let mut builder = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default());
         *builder.options_mut() = options;
         let resolver = {
@@ -505,12 +583,17 @@ impl Dns {
 
     fn srv(&self, name: &str, deadline: Instant) -> Result<Option<(String, u16)>> {
         let left = deadline.saturating_duration_since(Instant::now());
-        let Ok(Ok(found)) = self.runtime.block_on(async { tokio::time::timeout(left, self.resolver.srv_lookup(name)).await }) else { return Ok(None) };
+        let found = match self.runtime.block_on(async { tokio::time::timeout(left, self.resolver.srv_lookup(name)).await }) {
+            Err(_) => bail!("{name} did not answer within {} s", SRV_TIMEOUT.as_secs()),
+            Ok(Err(e)) if e.is_no_records_found() => return Ok(None),
+            Ok(Err(e)) => bail!("{name}: {e}"),
+            Ok(Ok(found)) => found,
+        };
         let best = found.answers().iter().filter_map(|r| match &r.data {
             RData::SRV(srv) => Some(srv),
             _ => None,
         });
-        Ok(best.min_by_key(|s| (s.priority, Reverse(s.weight))).map(|s| (s.target.to_string().trim_end_matches('.').to_owned(), s.port)))
+        Ok(best.min_by_key(|s| (s.priority, Reverse(s.weight))).map(|s| (s.target.to_string(), s.port)).filter(|(target, _)| target != "."))
     }
 
     fn ips(&self, host: &str, deadline: Instant) -> Result<Vec<IpAddr>> {
@@ -941,6 +1024,7 @@ pub struct Fleet {
     adopted: Mutex<HashMap<String, String>>,
     line: stagger::Line,
     events: Sender<ipc::Event>,
+    notes: Sender<sync::Note>,
     /// Pause between two starts.
     pub stagger: Duration,
 }
@@ -977,8 +1061,8 @@ impl Fleet {
 
     fn with(ipc: ipc::Server, raw: Receiver<ipc::Event>, ledger: Option<adopt::Ledger>) -> Result<(Fleet, Receiver<ipc::Event>)> {
         let games = sync::Games::default();
-        let (events, sender) = sync::spawn(ipc.clone(), games.clone(), raw)?;
-        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), line: stagger::Line::default(), events: sender, stagger: DEFAULT_STAGGER }, events))
+        let (events, sender, notes) = sync::spawn(ipc.clone(), games.clone(), raw)?;
+        Ok((Fleet { ipc, running: Arc::default(), reserved: Mutex::default(), games, reaping: Arc::default(), closing: AtomicBool::new(false), ledger, adopted: Mutex::default(), line: stagger::Line::default(), events: sender, notes, stagger: DEFAULT_STAGGER }, events))
     }
 
     fn adopt(&self, runs: &BTreeMap<String, adopt::Run>) -> Vec<Adoption> {
@@ -1000,6 +1084,12 @@ impl Fleet {
                 logs: run.game_dir.join("logs"),
             };
             self.insert(key.clone(), instance);
+            if !run.headless
+                && let Ok(dir) = instance::existing(&run.instance)
+            {
+                let start = share::Start { key: key.clone(), instance: run.instance.clone(), name: share::name_in(&dir), dir, game: run.game_dir.clone(), pid, companion: !run.plain, at: SystemTime::now(), adopted: true, fresh: false };
+                let _ = self.notes.send(sync::Note::Started(start));
+            }
             adopted.push(Adoption { key: key.clone(), batch: run.batch.clone(), instance: run.instance.clone(), account: run.account, pid, plain: run.plain, headless: run.headless });
         }
         adopted
@@ -1029,6 +1119,9 @@ impl Fleet {
                 }
             }
         }
+        for (key, pid) in &gone {
+            let _ = self.notes.send(sync::Note::Ended { key: key.clone(), pid: *pid });
+        }
         if let Some(ledger) = &self.ledger {
             ledger.remove(&gone);
         }
@@ -1056,7 +1149,10 @@ impl Fleet {
             return self.prepare_connection(target, accounts);
         }
         let _hold = instance::hold(&instance.id).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
-        if !self.instance_runs(&instance.id) {
+        self.settle_exits(share::flags_in(&share::Own::of(instance).dir).any());
+        let joining = self.instance_runs(&instance.id);
+        share::inbound(instance, joining)?;
+        if !joining {
             sync_mods(instance)?;
         }
         let server_addrs = server_addresses(target.join(), accounts, resolve_all, || !super::online::reachable())?;
@@ -1070,12 +1166,33 @@ impl Fleet {
         Ok(Prepared { target: target.clone(), server_addrs, way: Way::Game { installed, companion_jar } })
     }
 
+    /// Waits until the settings of every game that ended were shared, so neither a start writes over what they saved
+    /// nor quitting loses it; with `always`, also when no game ended, for exits already on their way.
+    /// Waits until the settings of games that ended were shared, at most a few seconds.
+    pub fn settle_sharing(&self) {
+        self.settle_exits(true);
+    }
+
+    fn settle_exits(&self, always: bool) {
+        let ended: Vec<(String, u32)> = lock(&self.running).iter_mut().filter_map(|(k, r)| (!r.poll()).then(|| (k.clone(), r.pid))).collect();
+        if ended.is_empty() && !always {
+            return;
+        }
+        for (key, pid) in ended {
+            let _ = self.notes.send(sync::Note::Ended { key, pid });
+        }
+        let (done, answer) = std::sync::mpsc::channel();
+        if self.notes.send(sync::Note::Flush(done)).is_ok() && answer.recv_timeout(EXITS_WAIT).is_err() {
+            eprintln!("the settings of games that ended are still being shared");
+        }
+    }
+
     fn prepare_connection(&self, target: &Target, accounts: &[Account]) -> Result<Prepared> {
         let version = &target.instance.game_version;
         if !headless::supports(version) {
-            bail!(super::i18n::trf("„Nur Verbindung“ geht für Minecraft %@ noch nicht. Schalte es aus oder wähle eine andere Version.", &[version]));
+            bail!(super::i18n::trf("„Headless“ geht für Minecraft %@ noch nicht. Schalte es aus oder wähle eine andere Version.", &[version]));
         }
-        let Some(server) = target.join() else { bail!(super::i18n::tr("„Nur Verbindung“ braucht einen Server. Trag im Batch einen ein.")) };
+        let Some(server) = target.join() else { bail!(super::i18n::tr("„Headless“ braucht einen Server. Trag im Batch einen ein.")) };
         let server_addrs = server_addresses(Some(server), accounts, resolve_all, || !super::online::reachable())?;
         Ok(Prepared { target: target.clone(), server_addrs, way: Way::Connection })
     }
@@ -1186,6 +1303,8 @@ impl Fleet {
         self.reserve(&key, &target.instance.id, account, server_addrs)?;
         sync::register(&self.games, &key, &target.instance.id, account.id);
         let token = self.ipc.register(&key);
+        let at = SystemTime::now();
+        let fresh = !target.instance.game_dir(account.id).join(OPTIONS_FILE).is_file();
         let child = launch(account, &key, &token).inspect_err(|_| {
             self.ipc.unregister(&key);
             lock(&self.reserved).remove(&key);
@@ -1200,6 +1319,7 @@ impl Fleet {
         }
         let pid = child.id();
         let game_dir = target.instance.game_dir(account.id);
+        let plain = !super::companion::available(&target.instance.game_version) || !wants_companion(target, std::slice::from_ref(account));
         if let Some(ledger) = self.ledger.as_ref().filter(|_| !target.connection_only())
             && let Some(seen) = adopt::identify(pid)
         {
@@ -1213,7 +1333,7 @@ impl Fleet {
                 game_dir: game_dir.clone(),
                 token,
                 server_addrs: server_addrs.to_vec(),
-                plain: !super::companion::available(&target.instance.game_version) || !wants_companion(target, std::slice::from_ref(account)),
+                plain,
                 headless: target.headless(),
             };
             ledger.add(&key, run);
@@ -1231,6 +1351,10 @@ impl Fleet {
             logs,
         };
         self.insert(key.clone(), instance);
+        if !target.connection_only() {
+            let start = share::Start { key: key.clone(), instance: target.instance.id.clone(), name: target.instance.name.clone(), dir: target.instance.dir(), game: game_dir, pid, companion: !plain, at, adopted: false, fresh };
+            let _ = self.notes.send(sync::Note::Started(start));
+        }
         Ok(key)
     }
 
@@ -1265,6 +1389,7 @@ impl Fleet {
         let reaping = Arc::clone(&self.reaping);
         let ipc = self.ipc.clone();
         let ledger = self.ledger.clone();
+        let notes = self.notes.clone();
         std::thread::Builder::new().name("fleet-reaper".into()).spawn(move || {
             loop {
                 std::thread::sleep(REAP_INTERVAL);
@@ -1278,6 +1403,9 @@ impl Fleet {
                         ipc.unregister(key);
                         ended.push((key.clone(), instance.pid));
                     }
+                }
+                for (key, pid) in &ended {
+                    let _ = notes.send(sync::Note::Ended { key: key.clone(), pid: *pid });
                 }
                 if let Some(ledger) = &ledger
                     && !ended.is_empty()
@@ -1348,6 +1476,7 @@ impl Fleet {
             std::thread::sleep(QUIT_POLL);
         }
         self.end(&runs);
+        self.settle_exits(false);
     }
 
     /// Ends the instances `keys` at once, without waiting for them to save.
@@ -1394,7 +1523,7 @@ fn free(running: &mut HashMap<String, RunningInstance>, reserved: &HashMap<Strin
     if reserved.contains_key(key) || running.get_mut(key).is_some_and(RunningInstance::poll) {
         bail!("{} is already running in this batch", account.name);
     }
-    let same_game = reserved.values().any(|r| r.account == account.id && r.instance == instance) || running.values_mut().any(|r| r.account == account.id && r.instance == instance && r.poll());
+    let same_game = !instance.is_empty() && (reserved.values().any(|r| r.account == account.id && r.instance == instance) || running.values_mut().any(|r| r.account == account.id && r.instance == instance && r.poll()));
     if same_game {
         bail!("{} already plays this instance elsewhere", account.name);
     }
@@ -1418,6 +1547,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
     if matches!(instance.loader, Loader::Forge(_) | Loader::NeoForge(_)) {
         quiet_early_window(&instance.config_dir())?;
     }
+    share::verify_game(&instance.options_template(), &game_dir.join(OPTIONS_FILE), share::data_version(&installed.classpath, &[&installed.game_version, &installed.version_name]))?;
     let _ = super::game_icon::write(account, &game_dir.join(ICON_FILE));
     let mut extra = extra_arguments(target, account, &game_dir, ipc_address, key, token)?;
     extra.jvm.splice(0..0, batch_defaults(target, installed, companion_jar.is_some()));
@@ -1440,6 +1570,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         session,
         offline_name: account.name.clone(),
         memory_mb: target.memory_mb(),
+        memory_min_mb: target.memory_min_mb(),
         server: target.join().map(str::to_owned),
         world: match &target.quick {
             Some(Quick::World(folder)) if target.server().is_none() => Some(folder.clone()),
@@ -1493,10 +1624,10 @@ fn name_stand_in(server: &str) -> Result<SocketAddr> {
     Ok(SocketAddr::from(([240, a, b, c], port.unwrap_or(25565))))
 }
 
-/// Whether the games of `target` start with the companion: always in a batch, and alone when the instance asks for it
-/// or an account has a proxy, which must not connect without it.
+/// Whether the games of `target` start with the companion: always in a batch, and alone only when an account has a
+/// proxy, which must not connect without it.
 pub fn wants_companion(target: &Target, accounts: &[Account]) -> bool {
-    target.batch.is_some() || target.instance.companion || accounts.iter().any(|a| a.proxy.is_some())
+    target.batch.is_some() || accounts.iter().any(|a| a.proxy.is_some())
 }
 
 fn require_companion_for_proxy(account: &Account, companion_jar: Option<&Path>) -> Result<()> {
@@ -1533,8 +1664,8 @@ fn connect_one(target: &Target, account: &Account, key: &str, events: &Sender<ip
 
 fn refusal(why: headless::Refused) -> anyhow::Error {
     anyhow!(match why {
-        headless::Refused::Proxy => super::i18n::tr("Mit einem Proxy geht „Nur Verbindung“ noch nicht. Entferne den Proxy oder schalte den Modus aus."),
-        headless::Refused::Version => super::i18n::tr("Diese Minecraft-Version geht mit „Nur Verbindung“ noch nicht."),
+        headless::Refused::Proxy => super::i18n::tr("Mit einem Proxy geht „Headless“ noch nicht. Entferne den Proxy oder schalte den Modus aus."),
+        headless::Refused::Version => super::i18n::tr("Diese Minecraft-Version geht mit „Headless“ noch nicht."),
     })
 }
 
@@ -1646,8 +1777,10 @@ fn find_instance<'a>(instances: &'a [Instance], who: &str) -> Result<&'a Instanc
     instances.iter().find(|i| i.id == who || i.name.eq_ignore_ascii_case(who)).with_context(|| format!("no instance {who}"))
 }
 
-fn instance_of<'a>(instances: &'a [Instance], batch: &Batch) -> Result<&'a Instance> {
-    instances.iter().find(|i| i.id == batch.instance_id).with_context(|| format!("the instance of {} is gone: manycraft batch instance {} <instance>", batch.name, batch.name))
+fn target_of(instances: &[Instance], batch: &Batch) -> Result<Target> {
+    let Some(id) = batch.instance() else { return Ok(Target::connection(batch)) };
+    let found = instances.iter().find(|i| i.id == id).with_context(|| format!("the instance of {} is gone: manycraft batch instance {} <instance>", batch.name, batch.name))?;
+    Ok(Target::of_batch(batch, found))
 }
 
 pub(super) fn parse_loader(text: &str) -> Result<Loader> {
@@ -1718,7 +1851,10 @@ fn list() -> Result<i32> {
     let name = |id: &Uuid| accounts.iter().find(|a| a.id == *id).map_or_else(|| id.to_string(), |a| a.name.clone());
     for b in batch::load_all()? {
         let members: Vec<String> = b.accounts.iter().map(name).collect();
-        let (played, memory) = instance_of(&instances, &b).map_or_else(|_| ("-".to_owned(), b.memory_override.unwrap_or_default()), |i| (format!("{} ({})", i.name, i.version_line()), b.memory(i.memory())));
+        let (played, memory) = match b.instance() {
+            None => (format!("none, headless {}", b.connection_version()), b.memory_override.unwrap_or_default()),
+            Some(id) => instances.iter().find(|i| i.id == id).map_or_else(|| ("-".to_owned(), b.memory_override.unwrap_or_default()), |i| (format!("{} ({})", i.name, i.version_line()), b.memory(i.memory()))),
+        };
         println!("{} ({})  instance {played}  server {}  {memory} MB  accounts: {}", b.name, b.id, b.server.as_deref().unwrap_or("-"), if members.is_empty() { "-".to_owned() } else { members.join(", ") });
     }
     Ok(0)
@@ -1751,7 +1887,7 @@ fn set_instance(who: &str, instance_name: &str) -> Result<i32> {
     let instances = instance::load_all()?;
     let played = find_instance(&instances, instance_name)?;
     let old = instances.iter().find(|i| i.id == target.instance_id && i.id != played.id).map(|i| i.name.clone());
-    target.instance_id.clone_from(&played.id);
+    target.play(&played.id);
     batch::save(target)?;
     println!("{} plays {} now", target.name, played.name);
     if let Some(old) = old {
@@ -1862,7 +1998,7 @@ fn start(who: &str, args: &[&str]) -> Result<i32> {
         bail!("{} has no accounts yet: manycraft batch add {} <account>", chosen.name, chosen.name);
     }
     let instances = instance::load_all()?;
-    let target = Target::of_batch(&chosen, instance_of(&instances, &chosen)?);
+    let target = target_of(&instances, &chosen)?;
     let saved = account::load()?;
     let accounts = chosen
         .accounts
@@ -2206,6 +2342,7 @@ mod tests {
         calls: Cell<u32>,
         start: Option<Instant>,
         deadlines: RefCell<Vec<Duration>>,
+        srv_down: Cell<bool>,
     }
 
     impl FakeDns {
@@ -2223,18 +2360,21 @@ mod tests {
     impl Lookup for FakeDns {
         fn srv(&self, name: &str, deadline: Instant) -> Result<Option<(String, u16)>> {
             self.record(name, deadline);
-            Ok(self.srv.get(name).cloned())
+            if self.srv_down.get() {
+                bail!("{name} did not answer");
+            }
+            Ok(self.srv.get(&name.to_ascii_lowercase()).cloned())
         }
 
         fn ips(&self, host: &str, deadline: Instant) -> Result<Vec<IpAddr>> {
             self.record(host, deadline);
-            self.ips.get(host).cloned().with_context(|| format!("cannot find {host}"))
+            self.ips.get(&host.to_ascii_lowercase()).cloned().with_context(|| format!("cannot find {host}"))
         }
     }
 
     fn fake_dns() -> FakeDns {
         let mut dns = FakeDns::default();
-        dns.srv.insert("_minecraft._tcp.example.org".into(), ("mc.example.org.net".into(), 25570));
+        dns.srv.insert("_minecraft._tcp.example.org".into(), ("mc.example.org.net.".into(), 25570));
         dns.ips.insert("mc.example.org.net".into(), vec!["10.0.0.7".parse().unwrap()]);
         dns.ips.insert("example.org".into(), vec!["10.0.0.1".parse().unwrap(), "::1".parse().unwrap()]);
         dns.ips.insert("plain.org".into(), vec!["10.0.0.2".parse().unwrap()]);
@@ -2247,15 +2387,24 @@ mod tests {
         s.parse().unwrap()
     }
 
+    fn found(dns: &impl Lookup, server: &str, at: Instant) -> Vec<SocketAddr> {
+        resolve_with(dns, server, at).unwrap().0.addrs
+    }
+
+    fn says(dns: &impl Lookup, server: &str) -> (String, u16) {
+        let (resolved, _) = resolve_with(dns, server, Instant::now()).unwrap();
+        (resolved.host, resolved.port)
+    }
+
     #[test]
     fn ip_literals_pass_through_without_lookups() {
         let dns = fake_dns();
         let at = Instant::now();
-        assert_eq!(resolve_with(&dns, "127.0.0.1:25565", at).unwrap(), [addr("127.0.0.1:25565")]);
-        assert_eq!(resolve_with(&dns, "127.0.0.1", at).unwrap(), [addr("127.0.0.1:25565")]);
-        assert_eq!(resolve_with(&dns, "[::1]:25570", at).unwrap(), [addr("[::1]:25570")]);
-        assert_eq!(resolve_with(&dns, "::1", at).unwrap(), [addr("[::1]:25565")]);
-        assert_eq!(resolve_with(&dns, "[::1]", at).unwrap(), [addr("[::1]:25565")]);
+        assert_eq!(found(&dns, "127.0.0.1:25565", at), [addr("127.0.0.1:25565")]);
+        assert_eq!(found(&dns, "127.0.0.1", at), [addr("127.0.0.1:25565")]);
+        assert_eq!(found(&dns, "[::1]:25570", at), [addr("[::1]:25570")]);
+        assert_eq!(found(&dns, "::1", at), [addr("[::1]:25565")]);
+        assert_eq!(found(&dns, "[::1]", at), [addr("[::1]:25565")]);
         assert_eq!(dns.calls.get(), 0);
     }
 
@@ -2268,16 +2417,32 @@ mod tests {
     }
 
     #[test]
-    fn srv_only_without_a_port_and_a_records_otherwise() {
+    fn srv_answers_the_default_port_and_a_records_any_other() {
         let at = Instant::now();
         let dns = FakeDns { start: Some(at), ..fake_dns() };
-        assert_eq!(resolve_with(&dns, "example.org", at).unwrap(), [addr("10.0.0.7:25570")]);
-        assert_eq!(resolve_with(&dns, "example.org:25565", at).unwrap(), [addr("10.0.0.1:25565"), addr("[::1]:25565")]);
-        assert_eq!(resolve_with(&dns, "plain.org", at).unwrap(), [addr("10.0.0.2:25565")]);
+        assert_eq!(found(&dns, "example.org", at), [addr("10.0.0.7:25570")]);
+        assert_eq!(found(&dns, "example.org:25565", at), [addr("10.0.0.7:25570")], "the game looks the record up for a typed 25565 too");
+        assert_eq!(found(&dns, "example.org:25570", at), [addr("10.0.0.1:25570"), addr("[::1]:25570")]);
+        assert_eq!(found(&dns, "plain.org", at), [addr("10.0.0.2:25565")]);
         assert!(resolve_with(&dns, "nowhere.org", at).is_err());
         assert!(resolve_with(&dns, "empty.org", at).is_err());
-        assert_eq!(resolve_with(&dns, "srv-ip.org", at).unwrap(), [addr("10.0.0.9:1")]);
-        assert_eq!(*dns.deadlines.borrow(), [Duration::from_secs(1), Duration::from_secs(3)]);
+        assert_eq!(found(&dns, "srv-ip.org", at), [addr("10.0.0.9:1")]);
+        let deadlines = dns.deadlines.borrow();
+        assert_eq!(deadlines[..2], [SRV_TIMEOUT, SRV_TIMEOUT]);
+        assert!(deadlines[2] >= RESOLVE_TIMEOUT, "the address lookup gets its own full time after the record lookup");
+    }
+
+    #[test]
+    fn the_handshake_names_what_the_game_sends() {
+        let dns = fake_dns();
+        assert_eq!(says(&dns, "example.org"), ("mc.example.org.net.".to_owned(), 25570), "the record's target with its closing dot, and its port");
+        assert_eq!(says(&dns, "Example.ORG:25565"), ("mc.example.org.net.".to_owned(), 25570));
+        assert_eq!(says(&dns, "Example.ORG:25570"), ("Example.ORG".to_owned(), 25570), "a typed port skips the record and keeps the typed spelling");
+        assert_eq!(says(&dns, "Plain.Org"), ("Plain.Org".to_owned(), 25565), "no record: the typed host and the default port");
+        assert_eq!(says(&dns, "plain.org:25599"), ("plain.org".to_owned(), 25599));
+        assert_eq!(says(&dns, "10.1.2.3"), ("10.1.2.3".to_owned(), 25565), "an IP stays as typed");
+        assert_eq!(says(&dns, "srv-ip.org"), ("10.0.0.9".to_owned(), 1));
+        assert_eq!(says(&dns, "[::1]:25570"), ("::1".to_owned(), 25570));
     }
 
     #[test]
@@ -2298,12 +2463,86 @@ mod tests {
     fn answers_are_cached_for_a_minute() {
         let resolver = Resolver::new(fake_dns());
         let t0 = Instant::now();
-        assert_eq!(resolver.resolve("plain.org", t0).unwrap(), [addr("10.0.0.2:25565")]);
+        assert_eq!(resolver.resolve("plain.org", t0).unwrap().addrs, [addr("10.0.0.2:25565")]);
         let after_first = resolver.lookup.calls.get();
         resolver.resolve("PLAIN.org", t0 + Duration::from_secs(59)).unwrap();
         assert_eq!(resolver.lookup.calls.get(), after_first);
-        resolver.resolve("plain.org", t0 + Duration::from_secs(60)).unwrap();
+        resolver.resolve("plain.org", t0 + Duration::from_secs(61)).unwrap();
         assert!(resolver.lookup.calls.get() > after_first);
+    }
+
+    #[test]
+    fn a_lookup_that_fails_never_replaces_what_an_earlier_one_found() {
+        let resolver = Resolver::new(fake_dns());
+        let t0 = Instant::now();
+        let first = resolver.resolve("example.org", t0).unwrap();
+        assert_eq!((first.host.as_str(), first.port), ("mc.example.org.net.", 25570));
+        resolver.lookup.srv_down.set(true);
+        let later = resolver.resolve("example.org", t0 + RESOLVE_CACHE + Duration::from_secs(1)).unwrap();
+        assert_eq!(later, first, "the old answer stands while the lookup is down");
+        let calls = resolver.lookup.calls.get();
+        resolver.resolve("example.org", t0 + RESOLVE_CACHE + Duration::from_secs(2)).unwrap();
+        assert_eq!(resolver.lookup.calls.get(), calls, "and the lookup is not hammered");
+        resolver.lookup.srv_down.set(false);
+        let healed = resolver.resolve("example.org", t0 + RESOLVE_CACHE + RESOLVE_RETRY + Duration::from_secs(2)).unwrap();
+        assert_eq!(healed, first);
+    }
+
+    #[test]
+    fn a_fallback_made_without_the_srv_answer_is_tried_again_soon() {
+        let resolver = Resolver::new(fake_dns());
+        resolver.lookup.srv_down.set(true);
+        let t0 = Instant::now();
+        let fallback = resolver.resolve("example.org", t0).unwrap();
+        assert_eq!((fallback.host.as_str(), fallback.port), ("example.org", 25565), "as the game would, without the record");
+        resolver.lookup.srv_down.set(false);
+        assert_eq!(resolver.resolve("example.org", t0 + Duration::from_secs(2)).unwrap(), fallback, "briefly kept");
+        let now = resolver.resolve("example.org", t0 + RESOLVE_RETRY + Duration::from_secs(1)).unwrap();
+        assert_eq!((now.host.as_str(), now.port), ("mc.example.org.net.", 25570));
+    }
+
+    #[test]
+    fn a_failure_is_shared_for_a_moment_and_then_asked_again() {
+        let resolver = Resolver::new(fake_dns());
+        let t0 = Instant::now();
+        assert!(resolver.resolve("nowhere.org", t0).is_err());
+        let calls = resolver.lookup.calls.get();
+        let again = resolver.resolve("nowhere.org", t0 + Duration::from_secs(1)).unwrap_err();
+        assert!(format!("{again:#}").contains("nowhere.org"), "{again:#}");
+        assert_eq!(resolver.lookup.calls.get(), calls, "waiting accounts do not each look it up");
+        assert!(resolver.resolve("nowhere.org", t0 + RESOLVE_RETRY + Duration::from_secs(1)).is_err());
+        assert!(resolver.lookup.calls.get() > calls);
+    }
+
+    struct SlowDns {
+        srv_calls: std::sync::atomic::AtomicU32,
+    }
+
+    impl Lookup for SlowDns {
+        fn srv(&self, _: &str, _: Instant) -> Result<Option<(String, u16)>> {
+            self.srv_calls.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(Some(("mc.slow.net.".into(), 25570)))
+        }
+
+        fn ips(&self, _: &str, _: Instant) -> Result<Vec<IpAddr>> {
+            Ok(vec!["10.0.0.5".parse().unwrap()])
+        }
+    }
+
+    #[test]
+    fn fifty_accounts_asking_at_once_share_one_lookup() {
+        let resolver = Arc::new(Resolver::new(SlowDns { srv_calls: 0.into() }));
+        let threads: Vec<_> = (0..50)
+            .map(|_| {
+                let resolver = Arc::clone(&resolver);
+                std::thread::spawn(move || resolver.resolve("slow.org", Instant::now()).unwrap())
+            })
+            .collect();
+        for t in threads {
+            assert_eq!(t.join().unwrap().port, 25570);
+        }
+        assert_eq!(resolver.lookup.srv_calls.load(Ordering::SeqCst), 1);
     }
 
     struct FakeProcess {
@@ -2717,17 +2956,15 @@ mod tests {
     }
 
     #[test]
-    fn the_companion_starts_in_batches_with_a_proxy_or_when_the_instance_asks() {
+    fn the_companion_starts_in_batches_and_alone_only_with_a_proxy() {
         let plain = Account::offline("AltOne").unwrap();
         let mut proxied = Account::offline("AltTwo").unwrap();
         proxied.proxy = Some("socks5://h:1".into());
-        let mut instance = Instance::new("Solo", "26.3", Loader::default());
+        let instance = Instance::new("Solo", "26.3", Loader::default());
         let solo = Target::solo(&instance);
         assert!(!wants_companion(&solo, std::slice::from_ref(&plain)));
         assert!(wants_companion(&solo, &[plain.clone(), proxied.clone()]));
         assert!(wants_companion(&target("A"), std::slice::from_ref(&plain)));
-        instance.companion = true;
-        assert!(wants_companion(&Target::solo(&instance), &[plain]));
     }
 
     #[test]
@@ -3004,6 +3241,21 @@ mod tests {
     }
 
     #[test]
+    fn a_headless_batch_without_an_instance_resolves_with_none_installed_and_never_clashes_on_an_instance() {
+        let mut b = Batch::headless("H");
+        b.server = Some("127.0.0.1:9".into());
+        let t = target_of(&[], &b).unwrap();
+        assert!(t.connection_only() && t.instance.id.is_empty() && headless::supports(&t.instance.game_version));
+        let mut played = b.clone();
+        played.mode = RunMode::Windows;
+        played.play("gone");
+        assert!(target_of(&[], &played).is_err());
+        let alt = Account::offline("AltOne").unwrap();
+        let reserved = HashMap::from([("other".to_owned(), Reservation { account: alt.id, instance: String::new(), server_addrs: Vec::new() })]);
+        assert!(free(&mut HashMap::new(), &reserved, &t.key(alt.id), &t.instance.id, &alt, &[]).is_ok());
+    }
+
+    #[test]
     fn a_headless_batch_starts_its_games_windowless_answers_packs_its_way_and_needs_the_companion() {
         let mut batch = target("A");
         let alt = Account::offline("AltOne").unwrap();
@@ -3020,6 +3272,19 @@ mod tests {
         assert!(require_companion_for_headless(&batch, None).is_err(), "without the companion the game would open a window");
         assert!(require_companion_for_headless(&target("B"), None).is_ok());
         assert!(!Target::solo(&batch.instance).headless());
+    }
+
+    #[test]
+    fn connection_only_accounts_accept_resource_packs_unless_the_batch_declines() {
+        let mut t = target("A");
+        assert_eq!(t.packs(), Packs::Ask, "a game asks");
+        let b = t.batch.as_mut().unwrap();
+        b.mode = RunMode::Connection;
+        assert_eq!(t.packs(), Packs::Accept, "nobody to ask without the game");
+        t.batch.as_mut().unwrap().packs = Packs::Decline;
+        assert_eq!(t.packs(), Packs::Decline);
+        t.batch.as_mut().unwrap().packs = Packs::Accept;
+        assert_eq!(t.packs(), Packs::Accept);
     }
 
     #[test]

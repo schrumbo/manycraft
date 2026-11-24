@@ -25,7 +25,7 @@ use crate::view::kit::group::{Line, group};
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
 use crate::view::kit::sheet::{self, Card, Primary};
-use crate::view::kit::spinner;
+use crate::view::kit::progress::placeholder;
 use crate::view::kit::stepper::Stepper;
 use crate::view::kit::switch::{Switch, SwitchLabel};
 use crate::view::kit::text::{line, mono, para};
@@ -398,7 +398,7 @@ impl Component for Create {
             list: use_state(Vec::new),
             versions: use_state(|| Load::Loading),
             supported: use_state(|| None),
-            memory: use_state(move || forms::memory_step(crate::core::settings::active().game.memory_mb, 0, memory_max)),
+            memory: use_state(|| crate::core::settings::active().game.memory_mb),
             free: use_state(|| None),
             saving: use_state(|| false),
             save_error: use_state(|| None),
@@ -440,7 +440,7 @@ impl Component for Create {
                 .hint(why.text.clone())
                 .hint_tone(t.danger_text)
                 .control(Button::new("instance.versions.retry", tr("Erneut versuchen")).glyph(Icon::Refresh).on_press(move |_| flow.load_versions(true))),
-            Load::Loading if list.is_empty() => Line::new("instance.version.row", tr("Minecraft-Version")).control(spinner::waiting(&t, tr("Versionen werden geladen …"))),
+            Load::Loading if list.is_empty() => Line::new("instance.version.row", tr("Minecraft-Version")).control(placeholder(&t, frame::PICK_W)),
             _ => {
                 let known = flow.supported.read().as_ref().filter(|(k, _)| k == loader.name()).and_then(|(_, s)| s.clone());
                 let offered = shown(&list, everything, known.as_ref(), &version);

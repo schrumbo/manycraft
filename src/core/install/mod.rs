@@ -67,6 +67,13 @@ pub struct Progress {
     pub total: usize,
 }
 
+impl Progress {
+    /// How many percent of the stage are done, 0 while nothing is counted.
+    pub fn percent(&self) -> u8 {
+        (self.done * 100).checked_div(self.total).unwrap_or(0).min(100) as u8
+    }
+}
+
 /// A game version with its loader, ready to launch.
 #[derive(Clone, Debug)]
 pub struct Installed {

@@ -4,8 +4,7 @@
 use freya::prelude::*;
 use uuid::Uuid;
 
-use super::target::{Choice, Section, Target};
-use crate::core::i18n::tr;
+use super::target::{Choice, Target};
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::text::{caption, line, spacer};
@@ -46,26 +45,16 @@ pub fn step(key: &Key, n: usize, hot: Option<usize>) -> Option<Step> {
     })
 }
 
-fn heading(section: Section) -> Option<String> {
-    match section {
-        Section::Recent => Some(tr("Zuletzt")),
-        Section::Groups => None,
-        Section::Accounts => Some(tr("Accounts")),
-    }
-}
-
 /// Where entry `i` starts and how tall the whole list is, with section headings when `sections`.
 fn tops(choices: &[Choice], sections: bool) -> (Vec<f32>, f32) {
     let mut y = 0.;
     let mut out = Vec::with_capacity(choices.len());
     let mut last = None;
     for c in choices {
-        if sections && last != Some(c.section) {
-            if heading(c.section).is_some() {
-                y += HEAD;
-            }
-            last = Some(c.section);
+        if sections && c.heading.is_some() && last != Some(&c.heading) {
+            y += HEAD;
         }
+        last = Some(&c.heading);
         out.push(y);
         y += ROW;
     }
@@ -132,11 +121,11 @@ impl Component for List {
         let mut items: Vec<Element> = Vec::new();
         let mut last = None;
         for (i, c) in self.choices.iter().enumerate() {
-            if self.sections && last != Some(c.section) {
-                if let Some(h) = heading(c.section) {
-                    items.push(rect().width(Size::fill()).height(Size::px(HEAD)).main_align(Alignment::End).padding((0., space::S, space::XXS, space::S)).child(caption(&t, h).font_weight(FontWeight::MEDIUM)).into_element());
+            if self.sections && last != Some(&c.heading) {
+                if let Some(h) = &c.heading {
+                    items.push(rect().width(Size::fill()).height(Size::px(HEAD)).main_align(Alignment::End).padding((0., space::S, space::XXS, space::S)).child(caption(&t, h.clone()).font_weight(FontWeight::MEDIUM)).into_element());
                 }
-                last = Some(c.section);
+                last = Some(&c.heading);
             }
             let pick = self.on_pick.clone();
             let hover = self.on_hover.clone();

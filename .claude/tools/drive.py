@@ -392,7 +392,7 @@ def start(opts):
     if os.environ.get("APP_SEED"):
         shutil.copytree(scratch_only(os.environ["APP_SEED"], "APP_SEED"), home, dirs_exist_ok=True)
     w, h = opts["size"]
-    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY", "MANYCRAFT_LAUNCHERS", "MANYCRAFT_DESKTOP", "MANYCRAFT_DRIVE_MEMORY", "MANYCRAFT_DRIVE_SCALE", "MANYCRAFT_FAKE_OUTAGE", "MANYCRAFT_FAKE_OUTAGE_FOR", "MANYCRAFT_FREYA_THEME", "MANYCRAFT_FAKE_SLOW_STOP", "MANYCRAFT_DRIVE_REAL")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MANYCRAFT_") or k in ("MANYCRAFT_UPDATE_URL", "MANYCRAFT_TELEGRAM_API", "MANYCRAFT_UPDATE_KEY", "MANYCRAFT_UNINSTALL_KEY", "MANYCRAFT_LAUNCHERS", "MANYCRAFT_DESKTOP", "MANYCRAFT_DRIVE_MEMORY", "MANYCRAFT_DRIVE_SCALE", "MANYCRAFT_FAKE_OUTAGE", "MANYCRAFT_FAKE_OUTAGE_FOR", "MANYCRAFT_FREYA_THEME", "MANYCRAFT_FAKE_SLOW_STOP", "MANYCRAFT_FAKE_INSTALL", "MANYCRAFT_DRIVE_REAL")}
     env.update(MANYCRAFT_HOME=str(home), MANYCRAFT_DRIVE=str(d), MANYCRAFT_DRIVE_OWNER=str(owner), MANYCRAFT_DRIVE_TTL=str(opts["ttl"]),
                MANYCRAFT_DRIVE_SIZE=f"{w}x{h}", RUST_BACKTRACE="1", TMP=str(d / "tmp"), TEMP=str(d / "tmp"), TMPDIR=str(d / "tmp"))
     if opts["theme"]:
@@ -615,6 +615,7 @@ app start [--name N] [--light|--dark] [--lang de|en] [--instances N] [--size WxH
                                  MANYCRAFT_FAKE_OUTAGE=S drops every fake game S seconds after start and refuses reconnects
                                  for MANYCRAFT_FAKE_OUTAGE_FOR seconds (default 90), like a server restart;
                                  MANYCRAFT_FAKE_SLOW_STOP=S makes every fake game take S seconds to stop;
+                                 MANYCRAFT_FAKE_INSTALL=S makes every start spend S seconds on a fake install, with counted progress;
                                  MANYCRAFT_DRIVE_REAL=1 starts real games (offline accounts, test server only);
                                  APP_SEED=dir is copied over the new data folder (temp folder only), e.g. a game cache or batch.json
 app ps | app gc                  instances of this worktree | remove dead ones

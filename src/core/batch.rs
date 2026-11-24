@@ -105,6 +105,11 @@ pub enum Packs {
 impl Packs {
     pub const ALL: [Self; 3] = [Self::Ask, Self::Accept, Self::Decline];
 
+    /// What a game in `mode` answers: a headless game has no window to ask in, so asking becomes accepting.
+    pub fn for_mode(self, mode: RunMode) -> Self {
+        if mode == RunMode::Connection && self == Self::Ask { Self::Accept } else { self }
+    }
+
     fn is_ask(&self) -> bool {
         *self == Self::Ask
     }
@@ -137,7 +142,10 @@ impl RunMode {
     }
 }
 
-/// Whether the "connection only" mode is offered at all. The release flips it when the mode is not ready to ship.
+/// The Minecraft version a headless batch speaks when it plays no instance.
+pub const HEADLESS_VERSION: &str = "26.3";
+
+/// Whether the headless mode is offered at all. The release flips it when the mode is not ready to ship.
 pub const CONNECTION_ONLY_OFFERED: bool = true;
 
 /// A server's code of conduct a batch's user accepted, by the hash of its text.
@@ -163,6 +171,10 @@ pub struct Batch {
     /// The instance every account plays; empty in a file the migration has not reached yet.
     #[serde(default)]
     pub instance_id: String,
+    /// The Minecraft version a headless batch speaks when it plays no instance; empty for a batch that plays one. Named apart
+    /// from the `game_version` of the files before instances, so an older version does not mistake it for one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub headless_version: String,
     #[serde(default)]
     pub server: Option<String>,
     #[serde(default)]
@@ -185,7 +197,7 @@ pub struct Batch {
     /// Games keep the full compiler, so a played game runs as fast as a solo one at the cost of more memory per game.
     #[serde(default)]
     pub full_speed: bool,
-    /// How the games run: with windows, as the real game without any, or as a connection only. A `headless: true` from an
+    /// How the games run: with windows, as the real game without any, or headless, as a protocol client. A `headless: true` from an
     /// early build reads as the hidden game.
     #[serde(default, alias = "headless", deserialize_with = "lenient_mode", skip_serializing_if = "RunMode::is_windows")]
     pub mode: RunMode,
@@ -242,6 +254,7 @@ impl Batch {
             id: Uuid::new_v4().simple().to_string(),
             name: name.to_owned(),
             instance_id: instance_id.to_owned(),
+            headless_version: String::new(),
             server: None,
             accounts: Vec::new(),
             join_commands: Vec::new(),
@@ -257,16 +270,52 @@ impl Batch {
         }
     }
 
+    /// A new, empty headless batch playing no instance: it speaks [`HEADLESS_VERSION`].
+    pub fn headless(name: &str) -> Self {
+        Self { headless_version: HEADLESS_VERSION.to_owned(), mode: RunMode::Connection, packs: Packs::Accept, ..Self::new(name, "") }
+    }
+
+    /// The instance every account plays; `None` for a headless batch that plays none.
+    pub fn instance(&self) -> Option<&str> {
+        Some(self.instance_id.as_str()).filter(|id| !id.is_empty())
+    }
+
+    /// The Minecraft version its protocol client speaks.
+    pub fn connection_version(&self) -> &str {
+        if self.headless_version.is_empty() { HEADLESS_VERSION } else { &self.headless_version }
+    }
+
+    /// Plays `instance_id` from now on.
+    pub fn play(&mut self, instance_id: &str) {
+        self.instance_id = instance_id.to_owned();
+        self.headless_version.clear();
+    }
+
+    /// Plays no instance from now on and speaks [`HEADLESS_VERSION`]; only a headless batch can.
+    pub fn play_none(&mut self) {
+        self.instance_id.clear();
+        if self.headless_version.is_empty() {
+            self.headless_version = HEADLESS_VERSION.to_owned();
+        }
+    }
+
+    fn playable(&self) -> bool {
+        match self.instance() {
+            Some(id) => super::instance::valid_id(id),
+            None => self.mode == RunMode::Connection && !self.headless_version.is_empty(),
+        }
+    }
+
     /// Its unattended settings.
     pub fn unattended(&self) -> Unattended {
-        Unattended { mode: self.mode, screenshots: self.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m)), packs: self.packs }
+        Unattended { mode: self.mode, screenshots: self.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m)), packs: self.packs.for_mode(self.mode) }
     }
 
     /// Takes over `u`; an interval it does not offer reads as none.
     pub fn set_unattended(&mut self, u: Unattended) {
         self.mode = u.mode;
         self.screenshots = u.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m));
-        self.packs = u.packs;
+        self.packs = u.packs.for_mode(u.mode);
     }
 
     /// Whether the user accepted the code of conduct with `hash` on `server` for this batch.
@@ -506,7 +555,7 @@ pub(super) fn load_all_in(root: &Path) -> Result<Vec<Batch>> {
             continue;
         }
         if let Some(batch) = store::load::<Batch>(&file)?
-            && !batch.instance_id.is_empty()
+            && (batch.instance().is_some() || !batch.headless_version.is_empty())
         {
             batches.push(batch);
         }
@@ -519,7 +568,7 @@ pub(super) fn save_in(root: &Path, batch: &Batch) -> Result<()> {
     if !super::instance::valid_id(&batch.id) {
         bail!("invalid batch id {:?}", batch.id);
     }
-    if !super::instance::valid_id(&batch.instance_id) {
+    if !batch.playable() {
         bail!("batch {} has no instance", batch.id);
     }
     store::write::<Batch>(&root.join(&batch.id).join(FILE), &serde_json::to_vec_pretty(batch)?, |_| Ok(()))
@@ -528,6 +577,32 @@ pub(super) fn save_in(root: &Path, batch: &Batch) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_headless_batch_without_an_instance_round_trips_and_a_game_batch_needs_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = Batch::headless("Farm");
+        assert_eq!((b.instance(), b.connection_version()), (None, HEADLESS_VERSION));
+        save_in(dir.path(), &b).unwrap();
+        assert_eq!(load_all_in(dir.path()).unwrap(), vec![b.clone()]);
+        let text = std::fs::read_to_string(dir.path().join(&b.id).join(FILE)).unwrap();
+        assert!(text.contains("\"headless_version\": \"26.3\"") && !text.contains("game_version"));
+        let windows = Batch { mode: RunMode::Windows, ..b.clone() };
+        assert!(save_in(dir.path(), &windows).is_err());
+        let mut played = windows;
+        played.play("i1");
+        save_in(dir.path(), &played).unwrap();
+        assert!(!std::fs::read_to_string(dir.path().join(&b.id).join(FILE)).unwrap().contains("headless_version"));
+    }
+
+    #[test]
+    fn a_batch_without_an_instance_that_is_not_headless_stays_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("b1").join(FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, br#"{"id":"b1","name":"N"}"#).unwrap();
+        assert!(load_all_in(dir.path()).unwrap().is_empty());
+    }
 
     #[test]
     fn a_deleted_batch_comes_back_as_it_was_and_never_over_a_newer_one() {
@@ -830,5 +905,35 @@ mod tests {
         let mut b = Batch::new("x", "i1");
         b.id = "../evil".into();
         assert!(save_in(dir.path(), &b).is_err());
+    }
+
+    #[test]
+    fn a_headless_batch_never_asks_about_resource_packs() {
+        let mut b = Batch::headless("h");
+        assert_eq!(b.unattended().packs, Packs::Accept);
+        b.packs = Packs::Ask;
+        assert_eq!(b.unattended().packs, Packs::Accept);
+        let mut u = b.unattended();
+        u.packs = Packs::Ask;
+        b.set_unattended(u);
+        assert_eq!(b.packs, Packs::Accept);
+        let mut g = Batch::new("g", "i1");
+        let mut u = g.unattended();
+        u.mode = RunMode::Windows;
+        u.packs = Packs::Ask;
+        g.set_unattended(u);
+        assert_eq!(g.packs, Packs::Ask);
+        u.packs = Packs::Decline;
+        u.mode = RunMode::Connection;
+        g.set_unattended(u);
+        assert_eq!(g.packs, Packs::Decline);
+    }
+
+    #[test]
+    fn detaching_the_instance_keeps_the_version_a_newer_app_stored() {
+        let mut b = Batch::new("h", "i1");
+        b.headless_version = "26.4".into();
+        b.play_none();
+        assert_eq!((b.instance(), b.headless_version.as_str()), (None, "26.4"));
     }
 }

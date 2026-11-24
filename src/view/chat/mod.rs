@@ -12,12 +12,13 @@ use freya::prelude::*;
 
 use self::picker::{List, Step, face, mark, step};
 pub use self::target::Target;
-use self::target::{Choice, at_query, at_word, batches_of, choices, exists, filter, name, reached, remember, resolve_at};
+use self::target::{Choice, at_query, at_word, batches_of, choices, exists, filter, name, on_page, reached, resolve_at};
 use super::commands::{Command, Extra, Shortcut};
 use super::drive::use_spot;
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
 use super::kit::field::Field;
+use super::kit::grip::{PanelGrip, chat_label};
 use super::kit::text::{caption, heading, line, para, secondary};
 use super::kit::tooltip::WithTip;
 use super::kit::menu::{self, Item, Menu};
@@ -41,6 +42,7 @@ const PAGE: usize = 200;
 const TIME_W: f32 = 40.;
 const CHIP_MAX: f32 = 220.;
 const POPUP_W: f32 = 320.;
+const SEARCH_FROM: usize = 7;
 const POPUP_ROWS: f32 = 10.;
 const TAG_MAX: f32 = 180.;
 const MENTION_MIN: usize = 3;
@@ -49,7 +51,9 @@ const LINK_SHOWN: usize = 40;
 const GLYPH: f32 = 0.5;
 const READING: f32 = control::READING;
 const PANEL_W: f32 = 340.;
-const PANEL_MIN: f32 = 280.;
+const PANEL_MIN: f32 = winstate::CHAT_RANGE.0;
+const PANEL_MAX: f32 = winstate::CHAT_RANGE.1;
+const PANEL_MAX_SHARE: f32 = 0.6;
 const PANEL_SHARE: f32 = 0.4;
 const HEAD_H: f32 = 40.;
 
@@ -58,11 +62,12 @@ const HEAD_H: f32 = 40.;
 pub struct Shared {
     /// Whether the chat sidebar of the batch pages is open.
     pub open: State<bool>,
-    /// The batch the picked recipient was picked for; another batch makes the lines follow it again.
+    /// The width the person dragged the sidebar to; 0 keeps the default.
+    pub width: State<f32>,
+    /// The batch the sidebar shows; a recipient picked on another page is dropped when the page changes.
     pub scope: State<Option<String>>,
-    /// The recipient the person picked; `None` follows the batch shown, else everyone.
+    /// The recipient the person picked on the page shown; `None` follows the page: its batch, else everyone.
     pub target: State<Option<Target>>,
-    pub recent: State<Vec<Target>>,
     pub draft: State<String>,
     pub history: State<Vec<String>>,
     pub recall: State<Option<usize>>,
@@ -94,9 +99,9 @@ impl Shared {
     pub fn create() -> Self {
         Self {
             open: State::create(winstate::load().chat_open),
+            width: State::create(winstate::load().chat_width),
             scope: State::create(None),
             target: State::create(None),
-            recent: State::create(Vec::new()),
             draft: State::create(String::new()),
             history: State::create(Vec::new()),
             recall: State::create(None),
@@ -118,13 +123,14 @@ impl Shared {
     }
 }
 
-/// The recipient in use: the one picked while it still exists, else the batch in `scope`, else everyone. A picked one that
-/// is gone gives nobody, so a line never goes to more games than the person chose.
+/// The recipient in use: the one picked while it still exists and belongs to the page, else the batch in `scope`, else
+/// everyone. A picked one that is gone gives nobody, so a line never goes to more games than the person chose.
 fn target_of(m: &Model, shared: Shared, scope: &Option<String>) -> Option<Target> {
+    let batch = scope.as_deref().filter(|b| m.batch(b).is_some());
     match shared.target.read().clone() {
-        Some(t) if exists(m, &t) => Some(t),
-        Some(_) => None,
-        None => Some(scope.clone().filter(|b| m.batch(b).is_some()).map_or(Target::All, Target::Batch)),
+        Some(t) if !exists(m, &t) => None,
+        Some(t) if on_page(m, &t, batch) => Some(t),
+        _ => Some(batch.map_or(Target::All, |b| Target::Batch(b.to_owned()))),
     }
 }
 
@@ -132,6 +138,16 @@ fn target_of(m: &Model, shared: Shared, scope: &Option<String>) -> Option<Target
 fn pick(store: Store, target: Target) {
     let mut shared = store.ui.chat;
     shared.target.set(Some(target));
+    shared.picker.set_if_modified(false);
+    shared.sent.set(None);
+    shared.rejected.set(None);
+    shared.focus.set(Some(Instant::now()));
+}
+
+/// Lets the page choose the recipient again: its batch, else everyone.
+fn follow_page(store: Store) {
+    let mut shared = store.ui.chat;
+    shared.target.set(None);
     shared.picker.set_if_modified(false);
     shared.sent.set(None);
     shared.rejected.set(None);
@@ -154,7 +170,7 @@ fn send(store: Store, scope: &Option<String>) {
     }
     let named = {
         let m = store.model.peek();
-        resolve_at(&text, &choices(&m, &shared.recent.peek()))
+        resolve_at(&text, &choices(&m, scope.as_deref()))
     };
     let text = match named {
         Some((target, rest)) => {
@@ -193,10 +209,6 @@ fn send(store: Store, scope: &Option<String>) {
                 store.dispatch(AppEvent::Broadcast { batch, text: text.clone() });
             }
         }
-    }
-    if target != Target::All {
-        let recent = remember(&shared.recent.peek(), &target);
-        shared.recent.set(recent);
     }
     let mut history = shared.history.peek().clone();
     if history.last() != Some(&text) {
@@ -317,8 +329,12 @@ pub fn extras(store: Store) -> Vec<Extra> {
     if !store.ui.chat.history.peek().is_empty() {
         out.push(Extra { id: "chat.recall".into(), label: tr("Letzte Nachricht zurückholen"), glyph: Icon::Message, shortcut: None, run: EventHandler::new(move |_| recall_last(store)) });
     }
-    if store.ui.chat.target.peek().as_ref().is_some_and(|t| *t != Target::All) {
-        out.push(Extra { id: "chat.toall".into(), label: tr("An alle senden"), glyph: Icon::Send, shortcut: None, run: EventHandler::new(move |_| pick(store, Target::All)) });
+    if store.ui.chat.target.peek().is_some() {
+        let label = match &*store.ui.page.peek() {
+            Page::Grid(Filter::Batch(id)) => store.model.peek().batch(id).map_or_else(|| tr("An alle senden"), |b| trf("An alle in %@ senden", &[&b.name])),
+            _ => tr("An alle senden"),
+        };
+        out.push(Extra { id: "chat.toall".into(), label, glyph: Icon::Send, shortcut: None, run: EventHandler::new(move |_| follow_page(store)) });
     }
     out
 }
@@ -330,9 +346,14 @@ pub struct Panel {
 }
 
 impl Panel {
-    /// The width the sidebar takes of a window `window` wide.
-    fn width(window: f32) -> f32 {
-        PANEL_W.min(window * PANEL_SHARE).max(PANEL_MIN)
+    /// The width the sidebar takes of a window `window` wide when it was dragged to `chosen`, 0 for the default.
+    fn width(window: f32, chosen: f32) -> f32 {
+        if chosen > 0. { chosen.clamp(PANEL_MIN, Self::most(window)) } else { PANEL_W.min(window * PANEL_SHARE).max(PANEL_MIN) }
+    }
+
+    /// The widest the sidebar gets in a window `window` wide.
+    fn most(window: f32) -> f32 {
+        PANEL_MAX.min(window * PANEL_MAX_SHARE).max(PANEL_MIN)
     }
 }
 
@@ -341,6 +362,8 @@ impl Component for Panel {
         let t = use_theme();
         let store = use_store();
         let (window, _) = *store.ui.window.read();
+        let chosen = *store.ui.chat.width.read();
+        let width = Self::width(window, chosen);
         let title = {
             let m = store.model.read();
             self.scope.as_ref().and_then(|b| m.batch(b)).map_or_else(|| tr("Batches"), |b| b.name.clone())
@@ -356,15 +379,20 @@ impl Component for Panel {
             .child(rect().width(Size::flex(1.)).child(caption(&t, title).max_lines(1).text_overflow(TextOverflow::Ellipsis)))
             .content(Content::flex())
             .child(Button::icon("chat.close", Icon::Close, tr("Chat ausblenden")).on_press(move |_| set_open(store, false)));
+        let column = rect()
+            .width(Size::fill())
+            .height(Size::fill())
+            .content(Content::flex())
+            .child(head)
+            .child(rect().width(Size::fill()).height(Size::flex(1.)).child(Conversation { scope: self.scope.clone() }));
         rect()
             .a11y_role(AccessibilityRole::Complementary)
             .a11y_alt(tr("Chat"))
-            .width(Size::px(Self::width(window)))
+            .width(Size::px(width))
             .height(Size::fill())
             .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 0., left: 1. }).alignment(BorderAlignment::Inner))
-            .content(Content::flex())
-            .child(head)
-            .child(rect().width(Size::fill()).height(Size::flex(1.)).child(Conversation { scope: self.scope.clone() }))
+            .child(PanelGrip { id: "chat.grip", label: chat_label(), width: store.ui.chat.width, shown: width, min: PANEL_MIN, max: Self::most(window), done: EventHandler::new(winstate::keep_chat_width) })
+            .child(column)
     }
 }
 
@@ -387,6 +415,14 @@ impl Component for Conversation {
         });
         use_side_effect_with_deps(&self.scope, move |scope| {
             let mut shared = store.ui.chat;
+            let off_page = {
+                let m = store.model.peek();
+                let batch = scope.as_deref().filter(|b| m.batch(b).is_some());
+                shared.target.peek().as_ref().is_some_and(|t| exists(&m, t) && !on_page(&m, t, batch))
+            };
+            if off_page {
+                shared.target.set(None);
+            }
             if *shared.scope.peek() != *scope {
                 shared.scope.set(scope.clone());
                 shared.sent.set(None);
@@ -1037,6 +1073,7 @@ impl Component for Composer {
             }
         });
         let draft = shared.draft.read().clone();
+        let scope = self.scope.clone();
         use_side_effect_with_deps(&draft, move |value| {
             let mut shared = store.ui.chat;
             if shared.recall.peek().is_some_and(|at| shared.history.peek().get(at) != Some(value)) {
@@ -1052,7 +1089,7 @@ impl Component for Composer {
             if shared.at_closed.peek().as_ref().is_some_and(|c| c != value) && at_query(value).is_none() {
                 shared.at_closed.set(None);
             }
-            let all = choices(&store.model.peek(), &shared.recent.peek());
+            let all = choices(&store.model.peek(), scope.as_deref());
             if let Some((target, rest)) = resolve_at(value, &all) {
                 shared.target.set(Some(target));
                 shared.draft.set(rest);
@@ -1061,7 +1098,7 @@ impl Component for Composer {
         let m = store.model.read();
         let target = target_of(&m, shared, &self.scope);
         let reach = target.as_ref().map_or(0, |tg| reached(&m, tg));
-        let all = choices(&m, &shared.recent.read());
+        let all = choices(&m, self.scope.as_deref());
         let suggest = at_query(&draft).filter(|_| shared.at_closed.read().as_deref() != Some(draft.as_str())).map(|q| (q.is_empty(), filter(&all, q)));
         let absent = match &target {
             None => Some(tr("Der gewählte Absender ist weg. Wähle, wer sendet.")),
@@ -1164,7 +1201,7 @@ impl Component for Composer {
             col = col.child(caption(&t, trf("Beim Betreten sendet jeder Account: %@", &[&names.join(", ")])).max_lines(1).text_overflow(TextOverflow::Ellipsis));
         }
         if *shared.picker.read() {
-            col = col.child(Popup { anchor: *shared.chip_at.read(), current: target.clone() });
+            col = col.child(Popup { scope: self.scope.clone(), anchor: *shared.chip_at.read(), current: target.clone() });
         } else if let Some((sections, list)) = suggest {
             col = col.child(Suggestions { anchor: *shared.field_at.read(), list, sections, hot: *shared.at_hot.read(), current: target.clone() });
         }
@@ -1183,6 +1220,7 @@ fn pick_at(store: Store, target: Target) {
 /// The recipient pop-up over the composer: a filter and the list.
 #[derive(PartialEq)]
 struct Popup {
+    scope: Option<String>,
     anchor: Bounds,
     current: Option<Target>,
 }
@@ -1197,11 +1235,13 @@ impl Component for Popup {
         let m = store.model.read();
         let q = shared.query.read().clone();
         use_side_effect_with_deps(&q, move |_| shared.hot.set_if_modified(None));
-        let list = filter(&choices(&m, &shared.recent.read()), &q);
+        let offered = choices(&m, self.scope.as_deref());
+        let searchable = offered.len() > SEARCH_FROM;
+        let list = filter(&offered, &q);
         let sections = q.trim().is_empty();
         let hot = (*shared.hot.read()).or_else(|| (!sections && !list.is_empty()).then_some(0)).or_else(|| self.current.as_ref().and_then(|c| list.iter().position(|x| x.target == *c)));
         let list_h = List::height(&list, sections, picker::ROW * POPUP_ROWS).max(picker::ROW);
-        let panel_h = control::M + space::XS + list_h + space::XS * 2.;
+        let panel_h = if searchable { control::M + space::XS } else { 0. } + list_h + space::XS * 2.;
         let width = POPUP_W.min(w - space::S * 2.);
         let x = self.anchor.x.min(w - width - space::S).max(space::S);
         let y = (self.anchor.y - panel_h - space::XS).max(space::S);
@@ -1232,7 +1272,7 @@ impl Component for Popup {
                 e.stop_propagation();
                 e.prevent_default();
             })
-            .child(Field::new("chat.sendas.search", shared.query).placeholder(tr("Account oder Batch suchen")).glyph(Icon::Search).auto_focus().rows_through());
+            .children(searchable.then(|| Field::new("chat.sendas.search", shared.query).placeholder(tr("Account oder Batch suchen")).glyph(Icon::Search).auto_focus().rows_through()));
         panel = if list.is_empty() {
             panel.child(rect().width(Size::fill()).height(Size::px(list_h)).center().child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3)))
         } else {

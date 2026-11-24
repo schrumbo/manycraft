@@ -7,13 +7,13 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use super::instance::DEFAULT_MEMORY_MB;
-use super::options::{Gpu, WindowSize};
+use super::options::{Gpu, MEMORY_FLOOR_MB, MEMORY_MIN_FLOOR_MB, WindowSize};
 use super::{paths, phone, store};
 
 const FILE: &str = "settings.json";
 const MAX_ATTEMPTS: u32 = 100;
 const MAX_SECS: u64 = 24 * 3600;
-const MEMORY_RANGE: (u32, u32) = (512, 1 << 20);
+const MEMORY_RANGE: (u32, u32) = (MEMORY_FLOOR_MB, 1 << 20);
 
 /// How a dropped instance comes back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -72,6 +72,9 @@ impl Default for Notifications {
 #[serde(default)]
 pub struct Game {
     pub memory_mb: u32,
+    /// The memory games start with (`-Xms`); Java decides while `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_min_mb: Option<u32>,
     /// Used only where it fits the game version; otherwise the runtime Mojang names.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub java: Option<PathBuf>,
@@ -85,7 +88,7 @@ pub struct Game {
 
 impl Default for Game {
     fn default() -> Self {
-        Self { memory_mb: DEFAULT_MEMORY_MB, java: None, window: None, fullscreen: false, gpu: None }
+        Self { memory_mb: DEFAULT_MEMORY_MB, memory_min_mb: None, java: None, window: None, fullscreen: false, gpu: None }
     }
 }
 
@@ -97,6 +100,27 @@ pub enum Appearance {
     System,
     Light,
     Dark,
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+/// What the manager window does while a game plays alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WhilePlaying {
+    /// Minimized, as other launchers do.
+    #[default]
+    Minimize,
+    /// Away in the notification area.
+    Tray,
+    /// Stays as it is.
+    Keep,
 }
 
 /// How often the tiles on screen refresh their previews, against what it costs the games.
@@ -135,6 +159,12 @@ pub struct Settings {
     pub prevent_sleep: bool,
     /// Whether the hint that closing the window keeps Manycraft in the notification area was seen.
     pub tray_explained: bool,
+    /// What the manager window does while a game plays alone; it stays as it is while a batch runs.
+    #[serde(skip_serializing_if = "is_default")]
+    pub while_playing: WhilePlaying,
+    /// Whether the manager window comes back when the last game played alone ends.
+    #[serde(skip_serializing_if = "is_true")]
+    pub reopen_after: bool,
     /// Whether the first game shown in the manager's place showed how to close it and get back.
     pub swap_explained: bool,
     pub appearance: Appearance,
@@ -161,7 +191,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, system_frame: false, kept: serde_json::Map::new() }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, while_playing: WhilePlaying::Minimize, reopen_after: true, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, system_frame: false, kept: serde_json::Map::new() }
     }
 }
 
@@ -188,6 +218,7 @@ impl Settings {
         self.reconnect.max_attempts = self.reconnect.max_attempts.min(MAX_ATTEMPTS);
         self.crash_restart.max_attempts = self.crash_restart.max_attempts.min(MAX_ATTEMPTS);
         self.game.memory_mb = self.game.memory_mb.clamp(MEMORY_RANGE.0, MEMORY_RANGE.1);
+        self.game.memory_min_mb = self.game.memory_min_mb.map(|min| min.clamp(MEMORY_MIN_FLOOR_MB, self.game.memory_mb));
         self.game.window = self.game.window.filter(|w| w.width > 0 && w.height > 0);
         if !self.language.as_deref().is_some_and(super::i18n::supported) {
             self.language = None;
@@ -400,13 +431,21 @@ mod tests {
         let s = load_from(dir.path()).unwrap();
         assert_eq!((s.game.clone(), s.language.clone()), (Game::default(), None));
         let mut s = Settings::default();
-        s.game = Game { memory_mb: 6144, java: Some(PathBuf::from("java")), window: Some(WindowSize { width: 1280, height: 720 }), fullscreen: true, gpu: Some(Gpu::HighPerformance) };
+        s.game = Game { memory_mb: 6144, memory_min_mb: Some(1024), java: Some(PathBuf::from("java")), window: Some(WindowSize { width: 1280, height: 720 }), fullscreen: true, gpu: Some(Gpu::HighPerformance) };
         s.language = Some("en".into());
         save_to(dir.path(), &s).unwrap();
         assert_eq!(load_from(dir.path()).unwrap(), s);
         std::fs::write(dir.path().join(FILE), r#"{"game":{"memory_mb":0,"window":{"width":0,"height":5}},"language":"fr"}"#).unwrap();
         let s = load_from(dir.path()).unwrap();
         assert_eq!((s.game.memory_mb, s.game.window, s.language), (MEMORY_RANGE.0, None, None));
+    }
+
+    #[test]
+    fn the_starting_memory_is_kept_between_its_floor_and_the_most() {
+        let fixed = |json: &str| serde_json::from_str::<Settings>(json).unwrap().sanitized().game;
+        assert_eq!(fixed(r#"{"game":{"memory_mb":4096,"memory_min_mb":64}}"#).memory_min_mb, Some(MEMORY_MIN_FLOOR_MB));
+        assert_eq!(fixed(r#"{"game":{"memory_mb":2048,"memory_min_mb":9000}}"#).memory_min_mb, Some(2048));
+        assert_eq!(fixed(r#"{"game":{"memory_mb":2048}}"#).memory_min_mb, None);
     }
 
     #[test]

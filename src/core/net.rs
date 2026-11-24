@@ -177,6 +177,11 @@ pub fn post_json<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, url: &str,
 /// Downloads `url` to `path` unless a file with the expected SHA-1 is already there.
 /// Without a hash, an existing file is kept. Streams to a unique temporary file and renames it into place.
 pub fn fetch_verified(agent: &ureq::Agent, url: &str, path: &Path, sha1: Option<&str>) -> Result<()> {
+    fetch_counted(agent, url, path, sha1, &|_, _| {})
+}
+
+/// Like [`fetch_verified`], and tells `progress` how many bytes arrived of how many the server announced, as they arrive.
+pub fn fetch_counted(agent: &ureq::Agent, url: &str, path: &Path, sha1: Option<&str>, progress: &(dyn Fn(u64, Option<u64>) + Sync)) -> Result<()> {
     if path.is_file() {
         match sha1 {
             None => return Ok(()),
@@ -188,10 +193,13 @@ pub fn fetch_verified(agent: &ureq::Agent, url: &str, path: &Path, sha1: Option<
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let tmp = retrying(url, || {
         let mut res = called(agent.get(url).call())?;
+        let announced = res.headers().get("content-length").and_then(|l| l.to_str().ok()).and_then(|l| l.parse::<u64>().ok());
         let mut reader = res.body_mut().with_config().limit(MAX_FILE).reader();
         let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(|e| Failure::Fatal(e.into()))?;
         let mut hasher = Sha1::new();
         let mut buf = vec![0; 64 * 1024];
+        let mut received = 0u64;
+        progress(0, announced);
         loop {
             let n = reader.read(&mut buf).map_err(|e| match e.downcast::<ureq::Error>() {
                 Ok(e) => Failure::from(e),
@@ -202,6 +210,8 @@ pub fn fetch_verified(agent: &ureq::Agent, url: &str, path: &Path, sha1: Option<
             }
             hasher.update(&buf[..n]);
             tmp.write_all(&buf[..n]).map_err(|e| Failure::Fatal(e.into()))?;
+            received += n as u64;
+            progress(received, announced);
         }
         if let Some(expected) = sha1 {
             let got = hex(&hasher.finalize());

@@ -299,7 +299,7 @@ impl Component for Sidebar {
             (false, 0) => Command::ShowAll.tip(),
             (false, n) => format!("{} · {}", Command::ShowAll.tip(), trf("%lld ungelesen", &[&n])),
         };
-        top = top.child(WithTip::new(Some(tip), r));
+        let group = rect().width(Size::fill()).spacing(1.).child(WithTip::new(Some(tip), r));
 
         let mut list = ScrollView::new().width(Size::fill()).height(Size::flex(1.)).spacing(1.).drag_scrolling(false);
         for b in batches {
@@ -325,7 +325,8 @@ impl Component for Sidebar {
                 .on_press(go(to))
                 .on_secondary(move |at| menu::open(store.ui, Menu::at(batch_items(store, &id), at)));
             let tip = if rail { format!("{} · {}", b.name, b.hint) } else { b.hint.clone() };
-            list = list.child(rect().key(&b.id).width(Size::fill()).child(WithTip::new(Some(tip), r)));
+            let indent = if rail { 0. } else { space::S };
+            list = list.child(rect().key(&b.id).width(Size::fill()).padding((0., 0., 0., indent)).child(WithTip::new(Some(tip), r)));
         }
 
         let mut foot = rect().width(Size::fill()).spacing(1.);
@@ -350,6 +351,8 @@ impl Component for Sidebar {
             .padding((space::S, space::S))
             .spacing(space::XS)
             .child(top)
+            .child(rect().width(Size::fill()).padding((space::XS, 0.)).child(hairline(&t)))
+            .child(group)
             .child(list)
             .content(Content::flex())
             .child(hairline(&t))

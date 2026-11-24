@@ -205,11 +205,14 @@ pub fn place() -> Option<(Rect, Mode)> {
     *PLACE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Gets the manager out of the way of the game that takes its place. A driven window stays, so agents keep seeing it.
 pub fn hide() {
     if drive::fenced("hide", "main window") {
         return;
     }
+    HIDDEN.store(true, std::sync::atomic::Ordering::Relaxed);
     #[cfg(target_os = "windows")]
     if let Some(hwnd) = hwnd() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, ShowWindow};
@@ -235,11 +238,42 @@ fn reveal_command(minimized: bool) -> windows_sys::Win32::UI::WindowsAndMessagin
     if minimized { SW_RESTORE } else { SW_SHOW }
 }
 
+/// Hands the memory a hidden manager no longer needs back to the system: the working set on Windows, the freed heap on
+/// Linux with glibc and on macOS.
+pub fn trim_memory() {
+    if !HIDDEN.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        unsafe extern "system" {
+            fn GetProcessHeap() -> *mut std::ffi::c_void;
+            fn HeapCompact(heap: *mut std::ffi::c_void, flags: u32) -> usize;
+        }
+        HeapCompact(GetProcessHeap(), 0);
+        K32EmptyWorkingSet(GetCurrentProcess());
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+    }
+}
+
 /// Brings the manager back in front exactly as the person left it: its size, its place and whether it is maximized stay.
 pub fn show() {
     if drive::fenced("show", "main window") {
         return;
     }
+    HIDDEN.store(false, std::sync::atomic::Ordering::Relaxed);
     #[cfg(target_os = "windows")]
     if let Some(hwnd) = hwnd() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, SetForegroundWindow, ShowWindow};
@@ -383,6 +417,7 @@ pub fn stow() {
 
 /// Brings a stowed manager window back; a driven one comes back without taking the focus.
 pub fn unstow() {
+    HIDDEN.store(false, std::sync::atomic::Ordering::Relaxed);
     #[cfg(target_os = "windows")]
     if let Some(hwnd) = hwnd() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};

@@ -4,8 +4,9 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-const MAX_NBT_DEPTH: usize = 64;
-const MAX_NBT_NODES: usize = 65_536;
+/// Vanilla's `NbtAccounter`: containers nest at most this deep, and one value costs at most this many accounted bytes.
+const MAX_NBT_DEPTH: usize = 512;
+const MAX_NBT_BYTES: usize = 2 << 20;
 
 /// A packet body being written.
 #[derive(Default)]
@@ -109,16 +110,44 @@ pub fn varint_prefix(buf: &[u8]) -> Result<Option<(i32, usize)>> {
     Ok(None)
 }
 
+struct Quota(usize);
+
+impl Quota {
+    fn take(&mut self, bytes: usize) -> Result<()> {
+        self.0 = self.0.checked_sub(bytes).context("NBT is too big")?;
+        Ok(())
+    }
+}
+
+enum Frame {
+    List { items: Vec<Value>, inner: u8, left: usize },
+    Compound { map: Map<String, Value>, name: String },
+}
+
+impl Frame {
+    fn finish(self) -> Value {
+        match self {
+            Frame::List { items, .. } => Value::Array(items),
+            Frame::Compound { map, .. } => Value::Object(map),
+        }
+    }
+}
+
+fn push(stack: &mut Vec<Frame>, frame: Frame) -> Result<()> {
+    ensure!(stack.len() < MAX_NBT_DEPTH, "NBT nested too deep");
+    stack.push(frame);
+    Ok(())
+}
+
 /// A packet body being read.
 pub struct In<'a> {
     buf: &'a [u8],
     pos: usize,
-    nodes: usize,
 }
 
 impl<'a> In<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
-        Self { buf, pos: 0, nodes: 0 }
+        Self { buf, pos: 0 }
     }
 
     pub fn take(&mut self, n: usize) -> Result<&'a [u8]> {
@@ -210,11 +239,94 @@ impl<'a> In<'a> {
         Ok(f64::from_be_bytes(self.array()?))
     }
 
-    /// Network NBT (a nameless root tag), as JSON: compounds become objects, lists and arrays become arrays.
+    /// Network NBT (a nameless root tag), as JSON: compounds become objects, lists and arrays become arrays. Read without
+    /// recursion, under the depth and size limits of the game's own `NbtAccounter`.
     pub fn nbt(&mut self) -> Result<Value> {
-        let tag = self.u8()?;
-        self.nodes = MAX_NBT_NODES;
-        self.tag(tag, 0)
+        let mut quota = Quota(MAX_NBT_BYTES);
+        let mut stack: Vec<Frame> = Vec::new();
+        let mut tag = self.u8()?;
+        loop {
+            let mut value = match tag {
+                0 => Value::Null,
+                1 => {
+                    quota.take(9)?;
+                    Value::from(self.array::<1>()?[0] as i8)
+                }
+                2 => {
+                    quota.take(10)?;
+                    Value::from(i16::from_be_bytes(self.array()?))
+                }
+                3 => {
+                    quota.take(12)?;
+                    Value::from(self.i32()?)
+                }
+                4 => {
+                    quota.take(16)?;
+                    Value::from(self.i64()?)
+                }
+                5 => {
+                    quota.take(12)?;
+                    Value::from(f64::from(self.f32()?))
+                }
+                6 => {
+                    quota.take(16)?;
+                    Value::from(self.f64()?)
+                }
+                7 => self.skip_array(1, &mut quota)?,
+                8 => Value::String(self.nbt_string(&mut quota)?),
+                9 => {
+                    quota.take(36)?;
+                    let inner = self.u8()?;
+                    let n = self.count()?;
+                    quota.take(4 * n)?;
+                    ensure!(inner != 0 || n == 0, "list of end tags");
+                    ensure!(stack.len() < MAX_NBT_DEPTH, "NBT nested too deep");
+                    if n > 0 {
+                        push(&mut stack, Frame::List { items: Vec::with_capacity(n.min(16)), inner, left: n })?;
+                        tag = inner;
+                        continue;
+                    }
+                    Value::Array(Vec::new())
+                }
+                10 => {
+                    quota.take(48)?;
+                    push(&mut stack, Frame::Compound { map: Map::new(), name: String::new() })?;
+                    match self.entry(&mut stack, &mut quota)? {
+                        Some(next) => {
+                            tag = next;
+                            continue;
+                        }
+                        None => stack.pop().map_or(Value::Null, Frame::finish),
+                    }
+                }
+                11 => self.skip_array(4, &mut quota)?,
+                12 => self.skip_array(8, &mut quota)?,
+                other => bail!("unknown NBT tag {other}"),
+            };
+            loop {
+                match stack.last_mut() {
+                    None => return Ok(value),
+                    Some(Frame::List { items, inner, left }) => {
+                        items.push(value);
+                        *left -= 1;
+                        if *left > 0 {
+                            tag = *inner;
+                            break;
+                        }
+                        value = stack.pop().map_or(Value::Null, Frame::finish);
+                    }
+                    Some(Frame::Compound { map, name }) => {
+                        quota.take(36)?;
+                        map.insert(std::mem::take(name), value);
+                        if let Some(next) = self.entry(&mut stack, &mut quota)? {
+                            tag = next;
+                            break;
+                        }
+                        value = stack.pop().map_or(Value::Null, Frame::finish);
+                    }
+                }
+            }
+        }
     }
 
     /// An optional network NBT value behind a presence flag.
@@ -222,52 +334,31 @@ impl<'a> In<'a> {
         if self.bool()? { self.nbt().map(Some) } else { Ok(None) }
     }
 
-    fn tag(&mut self, tag: u8, depth: usize) -> Result<Value> {
-        ensure!(depth < MAX_NBT_DEPTH, "NBT nested too deep");
-        ensure!(self.nodes > 0, "NBT has too many values");
-        self.nodes -= 1;
-        Ok(match tag {
-            0 => Value::Null,
-            1 => Value::from(self.array::<1>()?[0] as i8),
-            2 => Value::from(i16::from_be_bytes(self.array()?)),
-            3 => Value::from(self.i32()?),
-            4 => Value::from(self.i64()?),
-            5 => Value::from(f64::from(self.f32()?)),
-            6 => Value::from(self.f64()?),
-            7 => self.skip_array(1)?,
-            8 => Value::String(self.mutf8()?),
-            9 => {
-                let inner = self.u8()?;
-                let n = self.count()?;
-                ensure!(inner != 0 || n == 0, "list of end tags");
-                let mut items = Vec::with_capacity(n.min(1024));
-                for _ in 0..n {
-                    items.push(self.tag(inner, depth + 1)?);
-                }
-                Value::Array(items)
-            }
-            10 => {
-                let mut map = Map::new();
-                loop {
-                    let inner = self.u8()?;
-                    if inner == 0 {
-                        break;
-                    }
-                    let name = self.mutf8()?;
-                    let value = self.tag(inner, depth + 1)?;
-                    map.insert(name, value);
-                }
-                Value::Object(map)
-            }
-            11 => self.skip_array(4)?,
-            12 => self.skip_array(8)?,
-            other => bail!("unknown NBT tag {other}"),
-        })
+    /// The type of the next entry of the compound on top of `stack`, with its name stored there; `None` at its end.
+    fn entry(&mut self, stack: &mut [Frame], quota: &mut Quota) -> Result<Option<u8>> {
+        let tag = self.u8()?;
+        if tag == 0 {
+            return Ok(None);
+        }
+        let key = self.nbt_string(quota)?;
+        quota.take(28)?;
+        if let Some(Frame::Compound { name, .. }) = stack.last_mut() {
+            *name = key;
+        }
+        Ok(Some(tag))
     }
 
-    fn skip_array(&mut self, width: usize) -> Result<Value> {
+    fn nbt_string(&mut self, quota: &mut Quota) -> Result<String> {
+        let s = self.mutf8()?;
+        quota.take(36usize.saturating_add(2 * s.encode_utf16().count()))?;
+        Ok(s)
+    }
+
+    fn skip_array(&mut self, width: usize, quota: &mut Quota) -> Result<Value> {
         let n = self.count()?;
-        self.take(n.checked_mul(width).context("NBT array too long")?)?;
+        let bytes = n.checked_mul(width).context("NBT array too long")?;
+        quota.take(24 + bytes)?;
+        self.take(bytes)?;
         Ok(Value::Null)
     }
 
@@ -373,29 +464,100 @@ mod tests {
         assert!(In::new(&[9, 1, 0x7f, 0xff, 0xff, 0xff]).nbt().is_err(), "a list longer than the packet fails");
     }
 
-    #[test]
-    fn hostile_nbt_is_bounded_in_depth_values_and_arrays() {
-        fn lists(depth: usize) -> Vec<u8> {
-            let mut out = vec![9];
-            for _ in 1..depth {
-                out.extend([9, 0, 0, 0, 1]);
-            }
-            out.extend([0, 0, 0, 0, 0]);
-            out
+    fn lists(depth: usize) -> Vec<u8> {
+        let mut out = vec![9];
+        for _ in 1..depth {
+            out.extend([9, 0, 0, 0, 1]);
         }
-        let ok = std::thread::Builder::new().stack_size(512 * 1024).spawn(|| In::new(&lists(MAX_NBT_DEPTH)).nbt().is_ok()).unwrap().join().unwrap();
-        assert!(ok, "the deepest allowed NBT fits on a connection thread");
-        assert!(In::new(&lists(MAX_NBT_DEPTH + 1)).nbt().is_err());
+        out.extend([0, 0, 0, 0, 0]);
+        out
+    }
+
+    fn compounds(depth: usize) -> Vec<u8> {
+        let mut out = vec![10];
+        for _ in 1..depth {
+            out.push(10);
+            nbt_string(&mut out, "a");
+        }
+        out.extend(std::iter::repeat_n(0, depth));
+        out
+    }
+
+    #[test]
+    fn nbt_nests_as_deep_as_the_game_allows_and_no_deeper() {
+        for (name, build) in [("lists", lists as fn(usize) -> Vec<u8>), ("compounds", compounds)] {
+            assert!(In::new(&build(MAX_NBT_DEPTH)).nbt().is_ok(), "{name} at the limit");
+            match In::new(&build(MAX_NBT_DEPTH + 1)).nbt() {
+                Err(e) => assert!(e.to_string().contains("too deep"), "{name} past it: {e}"),
+                Ok(_) => panic!("{name} nested past the limit were accepted"),
+            }
+        }
+        let deep = In::new(&compounds(3)).nbt().unwrap();
+        assert_eq!(deep, serde_json::json!({"a": {"a": {}}}));
+        assert_eq!(In::new(&lists(3)).nbt().unwrap(), serde_json::json!([[[]]]));
+    }
+
+    #[test]
+    fn the_deepest_nbt_fits_a_connection_thread() {
+        let ok = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                for build in [lists as fn(usize) -> Vec<u8>, compounds] {
+                    let value = In::new(&build(MAX_NBT_DEPTH)).nbt().unwrap();
+                    drop(value);
+                }
+            })
+            .unwrap()
+            .join();
+        assert!(ok.is_ok(), "reading and dropping the deepest allowed NBT overflowed a 512 KB stack");
+    }
+
+    #[test]
+    fn hostile_nbt_is_bounded_in_size_and_arrays() {
         let mut array = vec![7, 0, 0, 0x10, 0];
         array.resize(array.len() + 0x1000, 0);
         let mut r = In::new(&array);
         assert_eq!(r.nbt().unwrap(), Value::Null);
         assert_eq!(r.pos, array.len());
-        let n = MAX_NBT_NODES + 1;
+        let n = MAX_NBT_BYTES / 4 + 1;
         let mut wide = vec![9, 1];
         wide.extend((n as i32).to_be_bytes());
         wide.resize(wide.len() + n, 0);
-        assert!(In::new(&wide).nbt().is_err());
+        assert!(In::new(&wide).nbt().err().is_some_and(|e| e.to_string().contains("too big")), "a list that costs more than the game's quota");
+        let mut empties = vec![9, 10];
+        empties.extend((200_000i32).to_be_bytes());
+        empties.resize(empties.len() + 200_000, 0);
+        assert!(In::new(&empties).nbt().is_err(), "tiny values add up to the quota");
+        let mut ok = vec![9, 10];
+        ok.extend((10_000i32).to_be_bytes());
+        ok.resize(ok.len() + 10_000, 0);
+        assert_eq!(In::new(&ok).nbt().unwrap().as_array().map(Vec::len), Some(10_000));
+    }
+
+    #[test]
+    fn strings_in_compounds_and_lists_survive_the_iterative_reader() {
+        let mut b = vec![10];
+        for (i, name) in ["x", "y"].into_iter().enumerate() {
+            b.push(9);
+            nbt_string(&mut b, name);
+            b.push(10);
+            b.extend(2i32.to_be_bytes());
+            for _ in 0..2 {
+                b.push(8);
+                nbt_string(&mut b, "k");
+                nbt_string(&mut b, &format!("v{i}"));
+                b.push(3);
+                nbt_string(&mut b, "n");
+                b.extend(7i32.to_be_bytes());
+                b.push(0);
+            }
+        }
+        b.push(8);
+        nbt_string(&mut b, "last");
+        nbt_string(&mut b, "end");
+        b.push(0);
+        let value = In::new(&b).nbt().unwrap();
+        assert_eq!(value, serde_json::json!({"x": [{"k": "v0", "n": 7}, {"k": "v0", "n": 7}], "y": [{"k": "v1", "n": 7}, {"k": "v1", "n": 7}], "last": "end"}));
     }
 
     #[test]

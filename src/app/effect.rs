@@ -92,6 +92,8 @@ pub enum Effect {
     Show { key: String, before: Option<String>, skipped: Option<String>, unshown: Box<Unshown> },
     HideManager,
     ShowManager,
+    /// Puts the manager window away for a game played alone, in the notification area when `tray`, and gives back what it holds.
+    Slim { tray: bool },
     AddAccount,
     ShowInstance(String),
     RememberAccount { instance: String, account: Uuid },

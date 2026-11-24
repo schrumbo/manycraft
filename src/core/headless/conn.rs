@@ -94,9 +94,6 @@ impl<R: Read> Reader<R> {
         } else {
             let data_len = usize::try_from(data_len).context("negative packet length")?;
             ensure!(data_len <= MAX_PACKET, "packet of {data_len} bytes");
-            if let Some(threshold) = self.threshold {
-                ensure!(data_len >= threshold, "compressed packet of {data_len} bytes below the threshold {threshold}");
-            }
             self.inflate.reset(true);
             let mut first = [0u8; 5];
             let mut got = 0;
@@ -281,12 +278,13 @@ mod tests {
     }
 
     #[test]
-    fn a_compressed_packet_below_the_threshold_or_too_large_is_refused() {
+    fn a_compressed_packet_below_the_threshold_is_read_like_the_game_does_and_a_too_large_one_is_refused() {
         let (mut w, _) = pair(Some(0), None);
         w.send(1, &[0; 10]).unwrap();
         let mut r = Reader::new(Cursor::new(w.output));
         r.compress(Some(256));
-        assert!(r.next(|_| true).is_err());
+        let p = r.next(|_| true).unwrap();
+        assert_eq!((p.id, p.body), (1, [0u8; 10].as_slice()), "the game's client does not check the threshold");
         let mut lying = Vec::new();
         wire::varint(&mut lying, 6);
         wire::varint(&mut lying, i32::MAX);

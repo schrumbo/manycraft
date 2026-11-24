@@ -355,6 +355,8 @@ pub struct Model {
     pub error: Option<String>,
     /// Batches whose game is being installed, with the percent done.
     pub preparing: HashMap<String, u8>,
+    /// The same installs with the step they are on and their pace, by batch.
+    pub meters: HashMap<String, super::meter::Meter>,
     /// Changes whenever an instance changes place in the sort order, so views know when to sort again.
     pub order_seq: u64,
     /// Last events of every instance by key, oldest first, at most `history::KEPT` each.
@@ -552,13 +554,16 @@ impl Model {
 
     /// The instance batch `id` plays.
     pub fn instance_of(&self, batch_id: &str) -> Option<&Instance> {
-        self.batch(batch_id).and_then(|b| self.instance(&b.instance_id))
+        self.batch(batch_id).and_then(|b| self.instance(b.instance()?))
     }
 
     /// What `owner` plays: a batch with its instance, or an instance played alone by the games it owns.
     pub fn target(&self, owner: &str) -> Option<Target> {
         if let Some(batch) = self.batch(owner) {
-            return Some(Target::of_batch(batch, self.instance(&batch.instance_id)?));
+            return Some(match batch.instance() {
+                Some(id) => Target::of_batch(batch, self.instance(id)?),
+                None => Target::connection(batch),
+            });
         }
         let game = self.games.values().find(|g| g.batch_id == owner)?;
         Some(Target::solo(self.instance(&game.instance_id)?))
@@ -566,6 +571,9 @@ impl Model {
 
     /// Where `account` already plays `instance` other than in game `key`: the batch name, or the instance's when alone.
     pub fn playing_elsewhere(&self, instance: &str, account: Uuid, key: &str) -> Option<String> {
+        if instance.is_empty() {
+            return None;
+        }
         let other = self.games.values().find(|g| g.key != key && g.account_id == account && g.instance_id == instance && g.phase.is_active())?;
         match self.batch(&other.batch_id) {
             Some(batch) => Some(batch.name.clone()),
@@ -802,6 +810,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::Starting { .. } => tr("Startet…"),
         Phase::Plain => tr("Läuft · ohne Vorschau"),
         Phase::Menu => tr("Im Hauptmenü"),
+        Phase::Connecting { .. } if i.connection && i.reconnect_attempts > 0 => tr("Verbindet neu…"),
         Phase::Connecting { .. } if i.reconnect_attempts > 0 => trf("Verbindet neu · Versuch %lld von %lld", &[&i.reconnect_attempts, &crate::core::settings::active().reconnect.max_attempts]),
         Phase::Connecting { server } if server.is_empty() => tr("Verbindet…"),
         Phase::Connecting { server } => trf("Verbindet mit %@…", &[server]),

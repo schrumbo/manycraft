@@ -29,7 +29,8 @@ use super::forms::{self, Plain, Problem};
 const PROXY_TEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const CANNED_DELAY: Duration = Duration::from_millis(450);
-const CANNED_STEPS: usize = 8;
+const CANNED_APPLY_STEP: Duration = Duration::from_secs(4);
+pub(super) const CANNED_STEPS: usize = 8;
 
 static SAVING: Mutex<()> = Mutex::new(());
 
@@ -723,6 +724,8 @@ pub fn move_mods(mods: &[ModRef], game_version: &str, loader: &Loader) -> Result
 #[derive(Clone, Debug, PartialEq)]
 pub enum InstancePick {
     Existing(String),
+    /// None: a headless batch speaks the protocol of one Minecraft version and needs no game.
+    None,
     /// A new Fabric instance named like the batch.
     New { game_version: String, mods: Vec<ModRef> },
 }
@@ -756,7 +759,7 @@ pub fn save_batch(id: Option<&str>, edit: BatchEdit) -> Result<Batch> {
             setup::save(&made)?;
             Ok(made)
         })?),
-        InstancePick::Existing(_) => None,
+        InstancePick::Existing(_) | InstancePick::None => None,
     };
     let result = saved(|| {
         let instances = setup::load_all()?;
@@ -765,8 +768,10 @@ pub fn save_batch(id: Option<&str>, edit: BatchEdit) -> Result<Batch> {
             None => Batch::new(&edit.name, ""),
         };
         let instance_id = match &edit.instance {
-            InstancePick::Existing(id) => instances.iter().find(|i| i.id == *id).map(|i| i.id.clone()).ok_or_else(|| gone(crate::core::i18n::tr("Diese Instanz gibt es nicht mehr.")))?,
-            InstancePick::New { .. } => made.as_ref().map(|i| i.id.clone()).context("no new instance")?,
+            InstancePick::Existing(id) => Some(instances.iter().find(|i| i.id == *id).map(|i| i.id.clone()).ok_or_else(|| gone(crate::core::i18n::tr("Diese Instanz gibt es nicht mehr.")))?),
+            InstancePick::New { .. } => Some(made.as_ref().map(|i| i.id.clone()).context("no new instance")?),
+            InstancePick::None if edit.unattended.mode == batch::RunMode::Connection => None,
+            InstancePick::None => return Err(gone(crate::core::i18n::tr("Wähle eine Instanz."))),
         };
         let known: HashSet<Uuid> = account::load()?.into_iter().map(|a| a.id).collect();
         apply(&mut b, instance_id, edit.clone(), &known);
@@ -781,9 +786,12 @@ pub fn save_batch(id: Option<&str>, edit: BatchEdit) -> Result<Batch> {
     result
 }
 
-fn apply(b: &mut Batch, instance_id: String, edit: BatchEdit, known: &HashSet<Uuid>) {
+fn apply(b: &mut Batch, instance_id: Option<String>, edit: BatchEdit, known: &HashSet<Uuid>) {
     b.name = edit.name;
-    b.instance_id = instance_id;
+    match instance_id {
+        Some(id) => b.play(&id),
+        None => b.play_none(),
+    }
     b.server = edit.server;
     b.memory_override = edit.memory_override;
     let unseen: Vec<Uuid> = b.accounts.iter().copied().filter(|id| !known.contains(id)).collect();
@@ -875,11 +883,11 @@ pub fn save_instance(id: &str, base: &InstanceEdit, edit: InstanceEdit) -> Resul
     })
 }
 
-/// Sets whether the games of instance `id` played alone start with the companion, and returns the instance.
-pub fn save_companion(id: &str, on: bool) -> Result<setup::Instance> {
+/// Sets the memory instance `id` starts its games with, or with `None` lets it follow the launcher default, and returns the instance.
+pub fn save_memory_min(id: &str, min: Option<u32>) -> Result<setup::Instance> {
     saved(|| {
         let mut made = find_instance(id)?;
-        made.companion = on;
+        made.set_memory_min(min);
         setup::save(&made)?;
         Ok(made)
     })
@@ -1046,7 +1054,9 @@ pub fn delete_batch(b: &Batch) -> Result<String> {
 /// Brings a deleted batch back from the Papierkorb; refuses plainly when its instance or its Papierkorb entry is gone.
 pub fn restore_batch(b: &Batch) -> Result<()> {
     saved(|| {
-        if !setup::load_all()?.iter().any(|i| i.id == b.instance_id) {
+        if let Some(id) = b.instance()
+            && !setup::load_all()?.iter().any(|i| i.id == id)
+        {
             return Err(gone(tr("Die Instanz dieses Batches gibt es nicht mehr.")));
         }
         match batch::trashed()?.into_iter().find(|t| t.batch.id == b.id) {
@@ -1060,7 +1070,7 @@ pub fn restore_batch(b: &Batch) -> Result<()> {
 /// Puts the batch of Papierkorb entry `entry` back; refuses plainly when its instance is gone.
 pub fn restore_trashed_batch(entry: &str, instance: &str) -> Result<()> {
     saved(|| {
-        if !setup::load_all()?.iter().any(|i| i.id == instance) {
+        if !instance.is_empty() && !setup::load_all()?.iter().any(|i| i.id == instance) {
             return Err(gone(tr("Die Instanz dieses Batches gibt es nicht mehr.")));
         }
         batch::untrash(entry).map(|_| ())
@@ -1083,7 +1093,7 @@ pub fn launcher_folder(folder: &Path) -> Vec<Library> {
 
 /// Imports `found` as a new instance of its own name; see `launchers::import`. A driven instance runs the same steps,
 /// then makes an empty instance of the same version and loader without reading the other launcher's files.
-pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<setup::Instance> {
+pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: mrpack::Progress) -> Result<setup::Instance> {
     if !drive::fenced("launcher import", found.key()) {
         return launchers::import(found, &found.name, take, cancel, progress);
     }
@@ -1091,7 +1101,7 @@ pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(
         if cancel.load(Ordering::SeqCst) {
             bail!(mrpack::Refused::Cancelled);
         }
-        progress(step, CANNED_STEPS);
+        progress(mrpack::Phase::Copying, step, CANNED_STEPS);
         std::thread::sleep(CANNED_DELAY);
     }
     saved(|| {
@@ -1108,7 +1118,7 @@ pub fn import_found(found: &Found, take: Take, cancel: &AtomicBool, progress: &(
 
 /// Imports a `.mrpack`, Prism export or Prism instance folder as a new instance; see `mrpack::import`.
 /// A driven instance runs the same checks, then makes an empty one of the pack's name without downloading.
-pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<setup::Instance> {
+pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: mrpack::Progress) -> Result<setup::Instance> {
     if !drive::fenced("mrpack import", path.display()) {
         return mrpack::import(path, cancel, progress);
     }
@@ -1117,7 +1127,7 @@ pub fn import_instance(path: &std::path::Path, cancel: &AtomicBool, progress: &(
         if cancel.load(Ordering::SeqCst) {
             bail!(mrpack::Refused::Cancelled);
         }
-        progress(step, CANNED_STEPS);
+        progress(mrpack::Phase::Copying, step, CANNED_STEPS);
         std::thread::sleep(CANNED_DELAY);
     }
     saved(|| {
@@ -1165,12 +1175,23 @@ pub fn mod_updates(made: &setup::Instance) -> Result<Vec<Update>> {
 /// Applies `selection` to the saved instance `id` as it is on disk now and returns it. While a game of it
 /// is `running` only its list changes; the files follow at the next start.
 pub fn apply_updates(id: &str, selection: &[Update], running: bool) -> Result<setup::Instance> {
+    apply_updates_counted(id, selection, running, &|_, _| {})
+}
+
+/// Like the update apply above, and reports how many mod files are in place of how many the instance lists.
+pub fn apply_updates_counted(id: &str, selection: &[Update], running: bool, progress: modrinth::Progress) -> Result<setup::Instance> {
     saved(|| {
         let mut b = setup::load_all()?.into_iter().find(|b| b.id == id).ok_or_else(|| gone(crate::core::i18n::tr("Diese Instanz gibt es nicht mehr.")))?;
-        if running || drive::fenced("modrinth apply", selection.len()) {
+        if running {
+            modrinth::update_mods_later(&mut b, selection)?;
+        } else if drive::fenced("modrinth apply", selection.len()) {
+            for done in 0..=selection.len() {
+                progress(done, selection.len());
+                std::thread::sleep(CANNED_APPLY_STEP);
+            }
             modrinth::update_mods_later(&mut b, selection)?;
         } else {
-            modrinth::update_mods(&mut b, selection)?;
+            modrinth::update_mods(&mut b, selection, progress)?;
         }
         Ok(b)
     })
@@ -1307,12 +1328,23 @@ mod tests {
         b.join_commands = vec!["/home".into()];
         b.memory_override = Some(3000);
         let edit = |memory_override| BatchEdit { name: "Lobby".into(), instance: InstancePick::Existing("i2".into()), server: None, memory_override, accounts: vec![me, gone], background: Background::Balanced, launch_parallel: 4, full_speed: true, unattended: Unattended::default() };
-        apply(&mut b, "i2".into(), edit(None), &HashSet::from([me]));
+        apply(&mut b, Some("i2".into()), edit(None), &HashSet::from([me]));
         assert_eq!((b.name.as_str(), b.instance_id.as_str(), b.memory_override, b.accounts.as_slice()), ("Lobby", "i2", None, &[me][..]));
         assert_eq!(b.join_commands, ["/home"]);
         assert_eq!((b.background, b.launch_parallel, b.full_speed), (Background::Balanced, 4, true));
-        apply(&mut b, "i2".into(), edit(Some(2048)), &HashSet::from([me]));
+        apply(&mut b, Some("i2".into()), edit(Some(2048)), &HashSet::from([me]));
         assert_eq!(b.memory_override, Some(2048));
+    }
+
+    #[test]
+    fn a_headless_edit_plays_no_instance_and_a_game_mode_gives_one_back() {
+        let mut b = Batch::new("Farm", "i1");
+        let mut edit = BatchEdit { name: "Farm".into(), instance: InstancePick::None, server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0, full_speed: false, unattended: Unattended { mode: batch::RunMode::Connection, ..Unattended::default() } };
+        apply(&mut b, None, edit.clone(), &HashSet::new());
+        assert_eq!((b.instance(), b.headless_version.as_str(), b.mode), (None, batch::HEADLESS_VERSION, batch::RunMode::Connection));
+        edit.unattended.mode = batch::RunMode::Windows;
+        apply(&mut b, Some("i2".into()), edit, &HashSet::new());
+        assert_eq!((b.instance(), b.headless_version.as_str(), b.mode), (Some("i2"), "", batch::RunMode::Windows));
     }
 
     #[test]
@@ -1408,7 +1440,7 @@ mod tests {
         let mut b = Batch::new("Farm", "i1");
         b.accounts = vec![shown, unseen];
         let edit = BatchEdit { name: "Farm".into(), instance: InstancePick::Existing("i1".into()), server: Some("example.org".into()), memory_override: None, accounts: Vec::new(), background: Background::Saving, launch_parallel: 0, full_speed: false, unattended: Unattended { mode: batch::RunMode::Hidden, screenshots: Some(5), packs: batch::Packs::Decline } };
-        apply(&mut b, "i1".into(), edit, &HashSet::from([shown]));
+        apply(&mut b, Some("i1".into()), edit, &HashSet::from([shown]));
         assert_eq!(b.accounts, [unseen]);
         assert_eq!(b.unattended(), Unattended { mode: batch::RunMode::Hidden, screenshots: Some(5), packs: batch::Packs::Decline });
     }
