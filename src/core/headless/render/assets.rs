@@ -77,6 +77,18 @@ impl Texture {
         found
     }
 
+    /// The colour at `(u, v)` (clamped to the edges), blended between the four nearest texels.
+    pub fn smooth(&self, u: f32, v: f32) -> [f32; 4] {
+        let s = self.size as f32;
+        let (x, y) = ((u * s - 0.5).clamp(0.0, s - 1.0), (v * s - 0.5).clamp(0.0, s - 1.0));
+        let (x0, y0) = (x.floor() as u32, y.floor() as u32);
+        let (x1, y1) = ((x0 + 1).min(self.size - 1), (y0 + 1).min(self.size - 1));
+        let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+        let at = |x: u32, y: u32| self.levels[0][(y * self.size + x) as usize].map(|c| f32::from(c) / 255.0);
+        let (a, b, c, d) = (at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1));
+        [0, 1, 2, 3].map(|i| (a[i] + (b[i] - a[i]) * fx) * (1.0 - fy) + (c[i] + (d[i] - c[i]) * fx) * fy)
+    }
+
     /// The texel at `(u, v)` (repeating) on mip `level`.
     #[inline]
     pub fn sample(&self, u: f32, v: f32, level: usize) -> [u8; 4] {
@@ -101,6 +113,7 @@ pub struct Assets {
     pub(super) dry_foliage: Option<Texture>,
     pub(super) sun: Option<Texture>,
     pub(super) moon: [Option<Texture>; 8],
+    pub(super) vignette: Option<Texture>,
 }
 
 impl Source for Assets {
@@ -128,12 +141,12 @@ impl Assets {
     /// Reads what pictures need from a client jar.
     pub fn from_jar(reader: impl Read + Seek) -> Result<Self> {
         let mut zip = zip::ZipArchive::new(reader).context("not a jar")?;
-        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, moon: Default::default() };
+        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, moon: Default::default(), vignette: None };
         let mut bytes = Vec::new();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i)?;
             let Some(path) = entry.name().ok().and_then(|n| n.strip_prefix("assets/minecraft/").map(str::to_string)) else { continue };
-            let wanted = path.starts_with("blockstates/") || path.starts_with("models/block/") || path.starts_with("textures/block/") || path.starts_with("textures/colormap/") || path.starts_with("textures/environment/");
+            let wanted = path.starts_with("blockstates/") || path.starts_with("models/block/") || path.starts_with("textures/block/") || path.starts_with("textures/colormap/") || path.starts_with("textures/environment/") || path == "textures/misc/vignette.png";
             if !wanted || entry.size() > MAX_ENTRY {
                 continue;
             }
@@ -153,6 +166,7 @@ impl Assets {
                     "colormap/foliage" => assets.foliage = texture(&bytes, false),
                     "colormap/dry_foliage" => assets.dry_foliage = texture(&bytes, false),
                     "environment/celestial/sun" => assets.sun = texture(&bytes, true),
+                    "misc/vignette" => assets.vignette = texture(&bytes, true),
                     _ if name.starts_with("environment/celestial/moon/") => {
                         if let Some(phase) = MOON.iter().position(|p| name.ends_with(p)) {
                             assets.moon[phase] = texture(&bytes, true);

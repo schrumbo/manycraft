@@ -121,6 +121,22 @@ impl Target {
         }
     }
 
+    /// Darkens the picture towards its edges like the game's vignette: each pixel by `texture` (stretched over the
+    /// whole picture) times `strength`.
+    pub fn vignette(&mut self, texture: &Texture, strength: f32) {
+        if strength <= 0.0 {
+            return;
+        }
+        let (w, h) = (self.width as f32, self.height as f32);
+        for (i, c) in self.color.iter_mut().enumerate() {
+            let (x, y) = ((i % self.width) as f32 + 0.5, (i / self.width) as f32 + 0.5);
+            let t = texture.smooth(x / w, y / h);
+            for k in 0..3 {
+                c[k] *= 1.0 - t[k] * strength;
+            }
+        }
+    }
+
     /// Fills a convex polygon of view-space corners without depth, handing each covered pixel and the
     /// perspective-correct attributes there to `shade`; for the sky, which lies behind everything.
     pub fn paint(&mut self, poly: &[([f32; 3], [f32; 2])], mut shade: impl FnMut(&mut [f32; 3], [f32; 2])) {

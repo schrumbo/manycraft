@@ -19,8 +19,8 @@ pub fn decode(id: u32) -> Option<State> {
     if id >= STATES {
         return None;
     }
-    let at = BLOCKS.partition_point(|(first, _, _)| *first <= id).checked_sub(1)?;
-    let (first, name, props) = BLOCKS[at];
+    let at = BLOCKS.partition_point(|(first, ..)| *first <= id).checked_sub(1)?;
+    let (first, name, props, _) = BLOCKS[at];
     let mut rest = id - first;
     let mut properties = vec![("", ""); props.len()];
     for (slot, &p) in properties.iter_mut().zip(props).rev() {
@@ -32,13 +32,15 @@ pub fn decode(id: u32) -> Option<State> {
     Some(State { name, properties })
 }
 
-/// The id of block `name` with `properties`; a property left out takes its first value.
+/// The id of block `name` with `properties`; a property left out takes its value in the block's default state.
 pub fn encode(name: &str, properties: &[(&str, &str)]) -> Option<u32> {
-    let (first, _, props) = *BLOCKS.iter().find(|(_, n, _)| *n == name)?;
+    let (first, _, props, default) = *BLOCKS.iter().find(|(_, n, ..)| *n == name)?;
+    let fallback = decode(first + u32::from(default))?;
     let mut id = 0u32;
     for &p in props {
         let (key, values) = PROPERTIES[usize::from(p)];
-        let value = properties.iter().find(|(k, _)| *k == key).map_or(Some(0), |(_, v)| values.iter().position(|x| x == v))?;
+        let given = properties.iter().find(|(k, _)| *k == key).map(|(_, v)| *v).or_else(|| fallback.get(key))?;
+        let value = values.iter().position(|x| *x == given)?;
         id = id * values.len() as u32 + value as u32;
     }
     Some(first + id)
@@ -55,6 +57,8 @@ mod tests {
             assert_eq!(encode(s.name, &s.properties), Some(id), "{s:?}");
         }
         assert_eq!(encode("stone", &[]), Some(1));
+        assert_eq!(encode("grass_block", &[]), Some(9), "left out properties take the default state's values");
+        assert_eq!(decode(encode("oak_fence", &[]).unwrap()).unwrap().get("waterlogged"), Some("false"));
         assert_eq!(encode("no_such_block", &[]), None);
         assert_eq!(encode("grass_block", &[("snowy", "maybe")]), None);
     }

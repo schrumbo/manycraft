@@ -146,6 +146,22 @@ pub fn track(keys: &[(f32, f32)], time: f32) -> f32 {
     lerp((t - a) / (b - a), va, vb)
 }
 
+const SKY_LEVEL: [(f32, f32); 4] = [(133.0, 1.0), (11867.0, 1.0), (13670.0, 4.0 / 15.0), (22330.0, 4.0 / 15.0)];
+
+/// The highest sky light level the world gives at `time` (0..15), darkened by rain and thunder.
+pub fn sky_level(time: f32, rain: f32, thunder: f32) -> f32 {
+    let wet = (rain - thunder).max(0.0);
+    let level = 15.0 * track(&SKY_LEVEL, time);
+    let level = lerp(wet * 0.3125, level, 4.0);
+    lerp(thunder * 0.527_343_75, level, 4.0)
+}
+
+/// How strongly the game's vignette darkens the picture's edges for an eye at sky light `sky` and block light `block`.
+pub fn vignette(sky: u8, block: u8, level: f32) -> f32 {
+    let raw = (f32::from(sky) - (15.0 - level).round()).max(f32::from(block)).clamp(0.0, 15.0) / 15.0;
+    (1.0 - raw / (4.0 - 3.0 * raw)).clamp(0.0, 1.0)
+}
+
 const SKY_FACTOR: [(f32, f32); 4] = [(730.0, 1.0), (11270.0, 1.0), (13140.0, 0.24), (22860.0, 0.24)];
 const SKY_DAYLIGHT: [(f32, f32); 4] = [(730.0, 1.0), (11270.0, 1.0), (13140.0, 0.0), (22860.0, 0.0)];
 
@@ -211,6 +227,13 @@ mod tests {
         assert!(n[0].abs_diff(71) <= 1 && n[2].abs_diff(129) <= 1, "{n:?}");
         let torch = rgb(night.color(pack(0, 8)));
         assert!(torch[0].abs_diff(150) <= 1 && torch[2].abs_diff(90) <= 1, "{torch:?}");
+    }
+
+    #[test]
+    fn the_vignette_is_off_in_daylight_and_strong_at_night_away_from_torches() {
+        assert_eq!(vignette(15, 0, sky_level(6000.0, 0.0, 0.0)), 0.0);
+        assert!((vignette(15, 0, sky_level(18000.0, 0.0, 0.0)) - (1.0 - (4.0 / 15.0) / (4.0 - 0.8))).abs() < 1e-5);
+        assert_eq!(vignette(15, 15, sky_level(18000.0, 0.0, 0.0)), 0.0);
     }
 
     #[test]

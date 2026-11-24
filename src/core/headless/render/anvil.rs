@@ -186,9 +186,9 @@ impl World {
                         .unwrap_or(&[])
                         .iter()
                         .map(|p| {
-                            let name = p.get("Name").and_then(Tag::text).unwrap_or("minecraft:air");
+                            let name = p.text().or_else(|| ["Name", "id", ""].iter().find_map(|k| p.get(k).and_then(Tag::text))).unwrap_or("minecraft:air");
                             let name = name.strip_prefix("minecraft:").unwrap_or(name);
-                            let props: Vec<(&str, &str)> = match p.get("Properties") {
+                            let props: Vec<(&str, &str)> = match p.get("Properties").or_else(|| p.get("properties")) {
                                 Some(Tag::Compound(m)) => m.iter().filter_map(|(k, v)| Some((k.as_str(), v.text()?))).collect(),
                                 _ => Vec::new(),
                             };

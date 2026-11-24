@@ -158,6 +158,10 @@ pub fn render(world: &impl Blocks, biomes: &[Biome], camera: &Camera, sky: &Sky,
     let mut later = Later::default();
     scene.draw(&view, &lightmap, &mut target, &mut later);
     later.draw(&mut target);
+    if let Some(texture) = &assets.vignette {
+        let (sky_light, block_light) = world.light(eye[0], eye[1], eye[2]).unwrap_or((15, 0));
+        target.vignette(texture, light::vignette(sky_light, block_light, light::sky_level(time, sky.rain, sky.thunder)));
+    }
     let mut out = image::RgbaImage::new(w as u32, h as u32);
     for (px, c) in out.pixels_mut().zip(&target.color) {
         *px = image::Rgba([c[0], c[1], c[2], 1.0].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8));
@@ -220,7 +224,7 @@ mod tests {
         assert!(took.as_secs_f32() < 2.0, "{took:?}");
     }
 
-    /// Renders the scenes in `RENDER_SCENES` (lines of `name x y z yaw pitch time`) of the world in `RENDER_WORLD` to
+    /// Renders the scenes in `RENDER_SCENES` (lines of `name x y z yaw pitch time [fov]`, `y` as `~` for eyes above the ground) of the world in `RENDER_WORLD` to
     /// `RENDER_OUT/ours-<name>.png`, at `RENDER_SIZE` (`1280x720`).
     #[test]
     #[ignore]
@@ -236,11 +240,22 @@ mod tests {
             let n = |i: usize| f[i].parse::<f64>().unwrap();
             let world = anvil::World::load(std::path::Path::new(&env("RENDER_WORLD")), n(1).floor() as i32, n(3).floor() as i32, 3).unwrap();
             let biomes = world.biomes(&jar).unwrap();
-            let camera = Camera { pos: [n(1), n(2), n(3)], yaw: n(4) as f32, pitch: n(5) as f32, fov: 70.0, distance: 2 };
+            let (x, z) = (n(1), n(3));
+            let y = if f[2] == "~" {
+                let ground = (-64..320).rev().find(|&y| {
+                    let s = block::decode(world.state(x.floor() as i32, y, z.floor() as i32)).map_or("air", |s| s.name);
+                    !(s.ends_with("air") || s.ends_with("leaves") || s.ends_with("log") || s.ends_with("_grass") || s.ends_with("fern") || s.ends_with("bush") || s == "water")
+                });
+                f64::from(ground.unwrap_or(64) + 1) + 1.62
+            } else {
+                n(2)
+            };
+            let fov = if f.len() > 7 { n(7) as f32 } else { 70.0 };
+            let camera = Camera { pos: [x, y, z], yaw: n(4) as f32, pitch: n(5) as f32, fov, distance: 2 };
             let sky = Sky { time: Some(n(6) as i64), rain: 0.0, thunder: 0.0 };
             let start = std::time::Instant::now();
             let image = render(&world, &biomes, &camera, &sky, w, h, &assets);
-            eprintln!("{} {:?}", f[0], start.elapsed());
+            eprintln!("{} eye {y:.2} {:?}", f[0], start.elapsed());
             image.save(out.join(format!("ours-{}.png", f[0]))).unwrap();
         }
     }
