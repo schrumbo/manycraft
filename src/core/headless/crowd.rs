@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use base64::Engine;
 use serde_json::Value;
 use uuid::Uuid;
@@ -128,6 +128,7 @@ impl Crowd {
         let kind = r.varint()?;
         let Some(kind) = usize::try_from(kind).ok().filter(|k| *k < ENTITY_TYPES.len()) else { bail!("entity type {kind}") };
         let pos = [r.f64()?, r.f64()?, r.f64()?];
+        ensure!(pos.iter().all(|v| v.is_finite()), "entity position is not finite");
         movement(r)?;
         let pitch = angle(r.u8()?);
         let yaw = angle(r.u8()?);
@@ -160,28 +161,32 @@ impl Crowd {
 
     fn moved(&mut self, r: &mut In, position: bool, rotation: bool) -> Result<()> {
         let id = r.varint()?;
-        let mut steps = Vec::new();
+        let mut mob = self.near.get_mut(&id);
         if position {
             let count = (r.varint()? as u32) >> 1;
+            let mut step = |r: &mut In| -> Result<()> {
+                let delta = [r.i16()?, r.i16()?, r.i16()?];
+                if let Some(mob) = mob.as_deref_mut() {
+                    for (p, d) in mob.pos.iter_mut().zip(delta) {
+                        if d != 0 {
+                            *p = ((*p * 4096.0).round() + f64::from(d)) / 4096.0;
+                        }
+                    }
+                }
+                Ok(())
+            };
             if count == 0 {
-                steps.push([r.i16()?, r.i16()?, r.i16()?]);
+                step(r)?;
             }
             for _ in 0..count {
                 r.varint()?;
-                steps.push([r.i16()?, r.i16()?, r.i16()?]);
+                step(r)?;
             }
         } else {
             r.bool()?;
         }
         let turn = if rotation { Some((angle(r.u8()?), angle(r.u8()?))) } else { None };
-        if let Some(mob) = self.near.get_mut(&id) {
-            for step in steps {
-                for (p, d) in mob.pos.iter_mut().zip(step) {
-                    if d != 0 {
-                        *p = ((*p * 4096.0).round() + f64::from(d)) / 4096.0;
-                    }
-                }
-            }
+        if let Some(mob) = mob {
             if let Some((yaw, pitch)) = turn {
                 mob.yaw = yaw;
                 mob.pitch = pitch;
@@ -208,9 +213,9 @@ impl Crowd {
         let (yaw, pitch) = (r.f32()?, r.f32()?);
         let relative = r.i32()?;
         if let Some(mob) = self.near.get_mut(&id) {
-            for (axis, value) in pos.into_iter().enumerate() {
-                mob.pos[axis] = if relative >> axis & 1 == 1 { mob.pos[axis] + value } else { value };
-            }
+            let moved: Vec<f64> = pos.into_iter().enumerate().map(|(axis, value)| if relative >> axis & 1 == 1 { mob.pos[axis] + value } else { value }).collect();
+            ensure!(moved.iter().all(|v| v.is_finite()), "entity position is not finite");
+            mob.pos.copy_from_slice(&moved);
             mob.yaw = if relative >> 3 & 1 == 1 { mob.yaw + yaw } else { yaw };
             mob.pitch = if relative >> 4 & 1 == 1 { mob.pitch + pitch } else { pitch };
         }
@@ -232,6 +237,7 @@ impl Crowd {
             }
             _ => return Ok(()),
         };
+        ensure!(pos.iter().all(|v| v.is_finite()), "entity position is not finite");
         let (yaw, pitch) = (r.f32()?, r.f32()?);
         if let Some(mob) = self.near.get_mut(&id) {
             mob.pos = pos;
@@ -789,6 +795,19 @@ mod tests {
         });
         assert!(read.is_err());
         assert_eq!(seen(&c)[0].data, Data::Sheep { color: 4, sheared: true });
+    }
+
+    #[test]
+    fn positions_that_are_not_finite_are_refused() {
+        let mut c = Crowd::default();
+        add(&mut c, 1, "pig", [1.0, 2.0, 3.0]);
+        let mut o = Out::default();
+        o.varint(1).f64(f64::NAN).f64(0.0).f64(0.0).f64(0.0).f64(0.0).f64(0.0).f32(0.0).f32(0.0).i32(0);
+        assert!(c.teleport(&mut In::new(&o.0)).is_err());
+        let mut o = Out::default();
+        o.varint(2).uuid(Uuid::from_u128(2)).varint(kind("pig")).f64(f64::INFINITY).f64(0.0).f64(0.0).u8(0).u8(0).u8(0).u8(0).varint(0);
+        assert!(c.add(&mut In::new(&o.0), [0.0; 3]).is_err());
+        assert_eq!(seen(&c).iter().map(|e| e.pos).collect::<Vec<_>>(), vec![[1.0, 2.0, 3.0]]);
     }
 
     #[test]

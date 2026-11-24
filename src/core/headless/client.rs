@@ -343,7 +343,6 @@ pub fn run(shared: &Shared, spec: &Spec) {
                     link.held.clear();
                     link.dead = None;
                     link.world.clear();
-                    link.crowd = Crowd::default();
                     shared.report(&mut link, StateKind::Disconnected, Some(reason.text), Some(cause), None);
                 }
                 let mut link = shared.lock();
@@ -379,6 +378,7 @@ fn session(shared: &Shared, spec: &Spec) -> End {
         link.loaded = false;
         link.held.clear();
         link.unacked = 0;
+        link.crowd = Crowd::default();
         shared.report(&mut link, StateKind::Connecting, None, None, None);
     }
     let outcome = join(shared, spec);

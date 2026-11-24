@@ -232,12 +232,13 @@ impl World {
         self.dimension = usize::try_from(id).ok().and_then(|i| self.types.get(i)).copied().unwrap_or_default();
     }
 
-    /// Forgets every chunk and change.
+    /// Forgets every chunk and change, and the weather.
     pub fn clear(&mut self) {
         self.chunks = HashMap::new();
         self.kept = 0;
         self.changes = HashMap::new();
         self.relit = HashMap::new();
+        (self.sky.rain, self.sky.thunder) = (0.0, 0.0);
     }
 
     /// Keeps the block data of a `level_chunk_with_light` packet; past the memory budget the chunks farthest from chunk
