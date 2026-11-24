@@ -1069,7 +1069,7 @@ pub fn restore_batch(b: &Batch) -> Result<()> {
 /// Puts the batch of Papierkorb entry `entry` back; refuses plainly when its instance is gone.
 pub fn restore_trashed_batch(entry: &str, instance: &str) -> Result<()> {
     saved(|| {
-        if !setup::load_all()?.iter().any(|i| i.id == instance) {
+        if !instance.is_empty() && !setup::load_all()?.iter().any(|i| i.id == instance) {
             return Err(gone(tr("Die Instanz dieses Batches gibt es nicht mehr.")));
         }
         batch::untrash(entry).map(|_| ())

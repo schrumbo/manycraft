@@ -155,7 +155,7 @@ impl Target {
     }
 
     fn packs(&self) -> Packs {
-        self.batch.as_ref().map_or(Packs::Ask, |b| b.packs)
+        self.batch.as_ref().map_or(Packs::Ask, |b| b.packs.for_mode(b.mode))
     }
 }
 

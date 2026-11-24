@@ -294,7 +294,9 @@ impl Batch {
     /// Plays no instance from now on and speaks [`HEADLESS_VERSION`]; only a headless batch can.
     pub fn play_none(&mut self) {
         self.instance_id.clear();
-        self.headless_version = HEADLESS_VERSION.to_owned();
+        if self.headless_version.is_empty() {
+            self.headless_version = HEADLESS_VERSION.to_owned();
+        }
     }
 
     fn playable(&self) -> bool {
@@ -925,5 +927,13 @@ mod tests {
         u.mode = RunMode::Connection;
         g.set_unattended(u);
         assert_eq!(g.packs, Packs::Decline);
+    }
+
+    #[test]
+    fn detaching_the_instance_keeps_the_version_a_newer_app_stored() {
+        let mut b = Batch::new("h", "i1");
+        b.headless_version = "26.4".into();
+        b.play_none();
+        assert_eq!((b.instance(), b.headless_version.as_str()), (None, "26.4"));
     }
 }

@@ -508,7 +508,7 @@ impl Flow {
         let edit = BatchEdit {
             name: self.name.peek().trim().to_owned(),
             instance: match self.played() {
-                _ if self.connection() => InstancePick::None,
+                _ if self.connection() => self.original.peek().as_ref().and_then(|b| b.instance().map(str::to_owned)).map_or(InstancePick::None, InstancePick::Existing),
                 Some(id) => InstancePick::Existing(id),
                 None => InstancePick::New { game_version: self.version.peek().clone(), mods: Vec::new() },
             },
