@@ -2419,17 +2419,6 @@
   "Spiel-Optionen erst ab Minecraft 1.13.": "Game options only from Minecraft 1.13.",
   "Ein Spiel läuft: Umstellungen gelten ab dem nächsten Start.": "A game is running: changes apply from the next start.",
   "%@, zurückgeholt": "%@, restored",
-  "Ab dem nächsten Start geteilt.": "Shared from the next start.",
-  "Eigene Kopie ab dem nächsten Start.": "Own copy from the next start.",
-  "Geteilt ab dem nächsten Start.": "Shared from the next start.",
-  "Eigene Datei ab dem nächsten Start.": "Own file from the next start.",
-  "Tippe auf die Instanzen, die ihre Einstellungen teilen sollen.": "Click the instances that should share their settings.",
-  "Spiel-Optionen werden geteilt.": "Game options are shared.",
-  "Mod-Einstellungen werden geteilt.": "Mod settings are shared.",
-  "Die Serverliste wird geteilt.": "The server list is shared.",
-  "Eigene Kopie der Spiel-Optionen.": "Own copy of the game options.",
-  "Eigene Kopie der Mod-Einstellungen.": "Own copy of the mod settings.",
-  "Eigene Kopie der Serverliste.": "Own copy of the server list.",
   "Speichern unter …": "Save As…",
   "Screenshot speichern unter …": "Save Screenshot As…",
   "Screenshot speichern": "Save Screenshot",
@@ -2449,5 +2438,6 @@
   "Bei %lld geschützten Spielen endet dabei die Anmeldung: Sie können keinem Server mehr beitreten.": "%lld protected games lose their login: they can't join a server anymore.",
   "Beende sie vorher, wenn du das nicht willst.": "Quit them first if you don't want that.",
   "Geschützte Spiele verlieren ihre Anmeldung": "Protected games lose their login",
-  "Trotzdem neu starten": "Restart Anyway"
+  "Trotzdem neu starten": "Restart Anyway",
+  "Ein Spiel dieser Instanz läuft. Was du umstellst, gilt ab seinem nächsten Start.": "A game of this instance is running. What you change applies from its next start."
 }
