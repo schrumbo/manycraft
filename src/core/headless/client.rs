@@ -723,7 +723,7 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         }
         c::DISCONNECT => return Ok(Some(dropped(text::line(&r.nbt()?)))),
         c::PLAYER_POSITION => teleported(shared, link, r)?,
-        c::LOGIN | c::LEVEL_CHUNK_WITH_LIGHT | c::FORGET_LEVEL_CHUNK | c::BLOCK_UPDATE | c::SECTION_BLOCKS_UPDATE => {
+        c::LOGIN | c::LEVEL_CHUNK_WITH_LIGHT | c::LIGHT_UPDATE | c::FORGET_LEVEL_CHUNK | c::BLOCK_UPDATE | c::SECTION_BLOCKS_UPDATE => {
             if let Err(e) = seen(link, id, r) {
                 eprintln!("{}: world packet {id} not read: {e:#}", shared.key);
             }
@@ -803,6 +803,7 @@ fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
         c::FORGET_LEVEL_CHUNK => link.world.forget(r)?,
         c::BLOCK_UPDATE => link.world.block(r)?,
         c::SECTION_BLOCKS_UPDATE => link.world.section(r)?,
+        c::LIGHT_UPDATE => link.world.light(r)?,
         _ => {}
     }
     Ok(())

@@ -120,6 +120,11 @@ impl Area {
     fn new(world: &Snapshot, center: (i32, i32), radius: u32) -> Self {
         let near = |at: &(i32, i32)| at.0.abs_diff(center.0) <= radius && at.1.abs_diff(center.1) <= radius;
         let mut chunks: HashMap<_, _> = world.chunks.iter().filter(|(at, _)| near(at)).filter_map(|(at, packed)| Some((*at, world::cells(packed, world.dimension).ok()?))).collect();
+        for (at, relit) in &world.relit {
+            if let Some(column) = chunks.get_mut(at) {
+                relit.apply(column.iter_mut().map(|c| (&mut c.sky, &mut c.block)));
+            }
+        }
         for (p, state) in &world.changes {
             let Some(column) = chunks.get_mut(&(p[0] >> 4, p[2] >> 4)) else { continue };
             let Ok(sy) = usize::try_from((p[1] - world.dimension.floor) >> 4) else { continue };
