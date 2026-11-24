@@ -13,10 +13,10 @@ use crate::core::account::offline_uuid;
 use crate::core::batch::Packs;
 use crate::core::ipc::{Click, Event, FromMod, Slot, ToMod};
 
-const USAGE: &str = "manycraft headless [--server host[:port]] [--name Bot] [--count 1] [--version 26.3] [--stagger-ms 250] [--packs ask|accept|decline]
+const USAGE: &str = "manycraft headless [--server host[:port]] [--name Bot] [--count 1] [--version 26.3] [--stagger-ms 250] [--packs ask|accept|decline] [--shots <folder>]
 
 Offline accounts only. Names are <name>1..<name>N when --count is above 1.
-stdin: say <text> (all), to <name> <text>, reconnect, respawn, accept, decline,
+stdin: say <text> (all), to <name> <text>, shot [<name>] (draws a picture), reconnect, respawn, accept, decline,
 click <name> <slot> [left|right|shift] (the open menu), close <name>, quit";
 
 /// Runs the subcommand.
@@ -53,6 +53,7 @@ fn run(args: &[String]) -> Result<()> {
         "decline" => Packs::Decline,
         other => bail!("--packs {other}"),
     };
+    let shots = opts.get("shots").map(std::path::PathBuf::from);
     let names: Vec<String> = if count == 1 { vec![prefix.to_owned()] } else { (1..=count).map(|i| format!("{prefix}{i}")).collect() };
     if let Some(long) = names.iter().find(|n| n.len() > 16) {
         bail!("{long} is longer than 16 characters");
@@ -76,7 +77,7 @@ fn run(args: &[String]) -> Result<()> {
     });
     let mut connections: Vec<(String, Connection)> = Vec::new();
     for name in names {
-        let spec = Spec { key: name.clone(), address: server.clone(), name: name.clone(), uuid: offline_uuid(&name), session: None, version: version.clone(), packs, proxy: None, conduct: Vec::new() };
+        let spec = Spec { key: name.clone(), address: server.clone(), name: name.clone(), uuid: offline_uuid(&name), session: None, version: version.clone(), packs, proxy: None, conduct: Vec::new(), shots: shots.as_ref().map(|d| d.join(&name)) };
         connections.push((name, start(spec, tx.clone())?));
         std::thread::sleep(stagger);
     }
@@ -97,6 +98,7 @@ fn run(args: &[String]) -> Result<()> {
                 let (who, text) = rest.split_once(' ').unwrap_or((rest, ""));
                 send(Some(who), &ToMod::ChatSend { text: text.to_owned() });
             }
+            "shot" => send((!rest.is_empty()).then_some(rest), &ToMod::Capture { width: 640 }),
             "reconnect" => send(None, &ToMod::Reconnect),
             "respawn" => send(None, &ToMod::Respawn),
             "accept" | "decline" => {
@@ -148,6 +150,7 @@ fn print_event(event: &Event, offers: &Mutex<HashMap<String, String>>) {
     match event {
         Event::Connected { instance, mod_version, .. } => println!("[{instance}] started ({mod_version})"),
         Event::Disconnected { instance } => println!("[{instance}] ended"),
+        Event::Picture { instance, width, height, .. } => println!("[{instance}] picture {width}x{height}"),
         Event::Message { instance, message: FromMod::State { kind, server, reason, cause, offer } } => {
             if let Some(offer) = offer {
                 offers.lock().unwrap_or_else(PoisonError::into_inner).insert(instance.clone(), offer.id.clone());

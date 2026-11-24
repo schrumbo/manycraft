@@ -450,7 +450,8 @@ impl<P: Pixels> Sim<P> {
         }
         let visible = self.visible.lock().map(|v| v.clone()).unwrap_or_default();
         for (key, run) in &mut self.running {
-            if self.bare.contains(key) || !std::mem::take(&mut run.shot) && (!visible.contains(key) || run.next_preview > now) {
+            let shot = std::mem::take(&mut run.shot);
+            if !shot && (self.bare.contains(key) || !visible.contains(key) || run.next_preview > now) {
                 continue;
             }
             run.seq += 2;
@@ -472,7 +473,7 @@ impl<P: Pixels> Sim<P> {
 fn touches<P>(update: &Update<P>, key: &str) -> bool {
     match update {
         Update::Launched { key: k, .. } | Update::Failed { key: k, .. } | Update::Exited { key: k, .. } | Update::Seed { key: k, .. } | Update::Preview { key: k, .. } | Update::ProxyChecked { key: k, .. } => k == key,
-        Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance }) => instance == key,
+        Update::Ipc(Event::Connected { instance, .. } | Event::Message { instance, .. } | Event::Disconnected { instance } | Event::Picture { instance, .. }) => instance == key,
         Update::Preparing { .. } | Update::Prepared { .. } | Update::ServerProbed { .. } | Update::SignIn { .. } | Update::Still { .. } | Update::Face { .. } | Update::Reach { .. } | Update::Ipc(Event::Reopen | Event::Play { .. }) => false,
     }
 }

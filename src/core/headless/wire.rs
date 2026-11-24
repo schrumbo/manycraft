@@ -167,6 +167,18 @@ impl<'a> In<'a> {
         Ok(value)
     }
 
+    pub fn varlong(&mut self) -> Result<i64> {
+        let mut value = 0u64;
+        for i in 0..10 {
+            let byte = self.u8()?;
+            value |= u64::from(byte & 0x7f) << (7 * i);
+            if byte & 0x80 == 0 {
+                return Ok(value as i64);
+            }
+        }
+        bail!("varlong too long")
+    }
+
     fn length(&mut self) -> Result<usize> {
         let n = self.varint()?;
         usize::try_from(n).with_context(|| format!("negative length {n}"))

@@ -248,6 +248,8 @@ pub enum Event {
     Connected { instance: String, pid: u32, mod_version: String },
     Message { instance: String, message: FromMod },
     Disconnected { instance: String },
+    /// A connection-only account drew a picture of where it is: RGBA rows, top down.
+    Picture { instance: String, seq: u32, width: u32, height: u32, rgba: Vec<u8> },
     /// Another start of Manycraft asks this one to come to the front.
     Reopen,
     /// Another start of Manycraft asks this one to play an instance, with an account when it names one.

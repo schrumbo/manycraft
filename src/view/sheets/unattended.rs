@@ -41,7 +41,7 @@ fn sentence(mode: RunMode) -> String {
     match mode {
         RunMode::Windows => tr("Jedes Spiel hat sein echtes Fenster, das du im Manager ein- und ausblendest."),
         RunMode::Hidden => tr("Das echte Spiel läuft unsichtbar und sparsam, ohne Fenster. Mods, Screenshots und ältere Server gehen, es braucht aber den Speicher des Spiels."),
-        RunMode::Connection => tr("Kein Spiel und kein Bild, nur Chat und Status: braucht kaum Speicher, aber keine Mods und keine Screenshots. Ob ein Server das erlaubt, entscheidest du."),
+        RunMode::Connection => tr("Kein Spiel, nur Chat und Status: braucht kaum Speicher, aber keine Mods. Bilder zeichnet es auf Wunsch grob aus den Blöcken. Ob ein Server das erlaubt, entscheidest du."),
     }
 }
 

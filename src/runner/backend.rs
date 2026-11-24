@@ -142,7 +142,14 @@ impl<P: Pixels> Real<P> {
                     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
                     drive::note(format!("chat {at} {instance} {text}"));
                 }
-                if forward.send_blocking(Update::Ipc(event)).is_err() {
+                let update = match event {
+                    Event::Picture { instance, seq, width, height, rgba } => match P::from_rgba(width, height, rgba) {
+                        Some(image) => Update::Preview { key: instance, seq, image },
+                        None => continue,
+                    },
+                    event => Update::Ipc(event),
+                };
+                if forward.send_blocking(update).is_err() {
                     return;
                 }
             }
