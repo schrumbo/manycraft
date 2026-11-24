@@ -272,11 +272,12 @@ fn go(m: &mut Model, key: &str, to: Phase, why: Why, out: &mut Vec<Effect>) -> b
 /// How much of the views a batch of reports touches: preview notices and public chat of games that talk touch at most the chat.
 fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
     let mut chat = false;
+    let mut outcome = false;
     for report in reports {
         match report {
             Report::Mod { key, message: FromMod::Preview { .. } } if !m.hint(key).link_lost => {}
             Report::Mod { message: FromMod::Map { .. } | FromMod::Menu { .. } | FromMod::Titles { .. }, .. } => {}
-            Report::Mod { message: FromMod::ChatOutcome { .. }, .. } => chat = true,
+            Report::Mod { message: FromMod::ChatOutcome { .. }, .. } => outcome = true,
             Report::Mod { key, message: FromMod::Chat { .. } } if !m.hint(key).link_lost => {
                 if m.games.get(key).is_some_and(|g| g.connection) && m.session.visible.contains(key) {
                     return Redraw::All;
@@ -286,7 +287,7 @@ fn redraw(m: &Model, env: &Env, reports: &[Report]) -> Redraw {
             _ => return Redraw::All,
         }
     }
-    if chat && env.settings.merged_chat { Redraw::Chat } else { Redraw::Nothing }
+    if outcome || (chat && env.settings.merged_chat) { Redraw::Chat } else { Redraw::Nothing }
 }
 
 /// Whether a start of `owner` can run now: it is known and, when it has accounts, its games are built.

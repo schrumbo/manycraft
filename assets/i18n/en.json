@@ -2361,6 +2361,7 @@
   "Eigene Kopie der Serverliste.": "Own copy of the server list.",
   "An %lld gesendet": "Sent to %lld",
   "%lld warten noch": "%lld still waiting",
+  "1 wartet noch": "1 still waiting",
   "%lld ohne Rückmeldung": "%lld without confirmation",
   "%lld nicht angekommen": "%lld did not get it",
   "nicht im Spiel": "not in the game",

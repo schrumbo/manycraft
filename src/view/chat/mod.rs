@@ -227,7 +227,7 @@ fn summary(said: &Said) -> String {
         parts.push(trf("An %lld gesendet", &[&sent]));
     }
     if waiting > 0 {
-        parts.push(trf("%lld warten noch", &[&waiting]));
+        parts.push(if waiting == 1 { tr("1 wartet noch") } else { trf("%lld warten noch", &[&waiting]) });
     }
     if unconfirmed > 0 {
         parts.push(trf("%lld ohne Rückmeldung", &[&unconfirmed]));
@@ -1181,7 +1181,10 @@ impl Component for Composer {
             Some((_, why)) => Some(line(&t, why, font::CAPTION, t.danger_text)),
             None => hint.map(|h| if attention { line(&t, h, font::CAPTION, t.attention_text) } else { caption(&t, h) }),
         };
-        let rows = 1 + missed.len();
+        let rows = match said.as_ref() {
+            Some(s) if s.counts().3 > 0 => 1 + s.rows.len().min(MISSED_SHOWN + 1),
+            _ => 1,
+        };
         let mut note = rect().width(Size::fill()).height(Size::px((font::CAPTION * font::LINE).ceil() * rows as f32)).maybe_child(note);
         for text in missed {
             note = note.child(caption(&t, text));
