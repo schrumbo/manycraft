@@ -429,7 +429,8 @@ impl<P: Pixels> Sim<P> {
         }
         let visible = self.visible.lock().map(|v| v.clone()).unwrap_or_default();
         for (key, run) in &mut self.running {
-            if self.bare.contains(key) || !std::mem::take(&mut run.shot) && (!visible.contains(key) || run.next_preview > now) {
+            let shot = std::mem::take(&mut run.shot);
+            if !shot && (self.bare.contains(key) || !visible.contains(key) || run.next_preview > now) {
                 continue;
             }
             run.seq += 2;

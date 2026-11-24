@@ -323,7 +323,8 @@ impl Component for Tile {
                 (true, ..) => (tr("Menü offen"), tr("Der Server hat ein Menü geöffnet. Klick zeigt es."), Tone::Attention),
                 (false, true, _) => (tr("Karte"), tr("Eine Karte in der Hand. Klick zeigt sie."), Tone::Attention),
                 (false, false, true) => (tr("gezeichnet"), tr("Aus den Blöcken gezeichnet, die der Server schickt – kein echtes Spielbild."), Tone::Quiet),
-                _ => (tr("ohne Bild"), tr("Läuft ohne Spiel. Sobald verbunden, zeichnet Screenshot ein Bild aus den Blöcken."), Tone::Quiet),
+                _ if game.phase.server().is_some() => (tr("ohne Bild"), tr("Nur Verbindung, kein Spiel. Screenshot zeichnet ein Bild aus den Blöcken."), Tone::Quiet),
+                _ => (tr("ohne Bild"), tr("Nur Verbindung, kein Spiel."), Tone::Quiet),
             };
             let tone = if tone == Tone::Attention && !game.shows.unseen { Tone::Accent } else { tone };
             pic = pic.child(rect().position(Position::new_absolute().left(space::S).top(space::S)).child(WithTip::new(Some(tip), badge(&t, mark, tone))));

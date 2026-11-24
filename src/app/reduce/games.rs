@@ -222,8 +222,9 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
         }
         Report::Frame { key, seq, image } => {
             if m.games.get(&key).is_some_and(|i| i.phase.is_running()) {
+                let still = (!m.games.get(&key).is_some_and(|g| g.connection)).then_some(false);
                 m.frames.insert(key.clone(), Frame { seq, live: true });
-                fx.frames.push(Effect::ShowFrame { key, image, still: Some(false) });
+                fx.frames.push(Effect::ShowFrame { key, image, still });
             } else {
                 fx.frames.push(Effect::DropImage(image));
             }

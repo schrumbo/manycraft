@@ -73,7 +73,7 @@ pub struct Dimension {
 impl Dimension {
     fn sane(&self) -> bool {
         let span = (MAX_SECTIONS * 16) as i32;
-        self.height > 0 && self.height <= span && self.height % 16 == 0 && self.floor % 16 == 0 && self.floor >= -span / 2 && self.floor + self.height <= span / 2
+        self.height > 0 && self.height <= span && self.height % 16 == 0 && self.floor % 16 == 0 && self.floor >= -span / 2 && self.floor <= span / 2 - self.height
     }
 }
 
@@ -499,7 +499,7 @@ mod tests {
     fn only_a_height_range_the_game_accepts_counts() {
         assert!(Dimension::default().sane());
         assert!(Dimension { floor: 0, height: 256 }.sane());
-        for bad in [(0, 0), (0, 2_000_000_000), (-64, 380), (-2_000_000_000, 384), (2016, 32), (-8, 384)] {
+        for bad in [(0, 0), (0, 2_000_000_000), (-64, 380), (-2_000_000_000, 384), (2016, 32), (-8, 384), (2_147_483_632, 16)] {
             assert!(!Dimension { floor: bad.0, height: bad.1 }.sane(), "{bad:?}");
         }
     }

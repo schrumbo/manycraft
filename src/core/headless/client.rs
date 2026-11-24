@@ -211,14 +211,14 @@ impl Shared {
         let [x, _, z] = link.position;
         let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), position: link.position, rotation: link.rotation, width, height };
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
-        let (key, events, shots, drawing) = (self.key.clone(), self.events.clone(), self.shots.clone(), Arc::clone(&self.drawing));
+        let (key, events, shots, drawing) = (self.key.clone(), self.events.clone(), self.shots.clone(), Drawing(Arc::clone(&self.drawing)));
         render::queue(request, vec![View::Eyes, View::Above], move |mut pictures| {
             let above = pictures.pop().unwrap_or_default();
             let eyes = pictures.pop().unwrap_or_default();
             if let Some(dir) = shots {
                 save(&dir, &stamp, &[("", &eyes), ("_above", &above)], width, height);
             }
-            drawing.store(false, Ordering::Release);
+            drop(drawing);
             let seq = PICTURES.fetch_add(2, Ordering::Relaxed).wrapping_add(2);
             let _ = events.send(Event::Picture { instance: key, seq, width, height, rgba: eyes });
         });
@@ -776,6 +776,14 @@ fn seen(link: &mut Link, id: i32, r: &mut In) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+struct Drawing(Arc<AtomicBool>);
+
+impl Drop for Drawing {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 fn save(dir: &std::path::Path, stamp: &str, pictures: &[(&str, &[u8])], width: u32, height: u32) {

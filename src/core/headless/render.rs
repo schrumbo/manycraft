@@ -64,7 +64,9 @@ pub fn queue(request: Request, views: Vec<View>, done: impl FnOnce(Vec<Vec<u8>>)
     let (tx, rx) = mpsc::channel::<Job>();
     let started = std::thread::Builder::new().name("headless-pictures".into()).spawn(move || {
         while let Ok(job) = rx.recv() {
-            job();
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
+                eprintln!("a picture failed to draw");
+            }
         }
     });
     if started.is_ok() && tx.send(job).is_ok() {
