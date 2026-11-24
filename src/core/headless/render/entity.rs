@@ -55,7 +55,7 @@ pub struct Skin {
 /// An item stack as a picture shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
-    /// The item's registry name (`minecraft:diamond_sword`).
+    /// The item's registry name without namespace (`diamond_sword`).
     pub id: &'static str,
     pub count: u8,
     /// Drawn with the enchantment glint.
@@ -155,7 +155,7 @@ pub enum Data {
     Display { common: Display, kind: DisplayKind },
     /// `color`: the dye colour id (0 white … 15 black).
     Sheep { color: u8, sheared: bool },
-    /// `kind` and `profession` are registry names (`minecraft:plains`, `minecraft:farmer`).
+    /// `kind` and `profession` are registry names without namespace (`plains`, `farmer`).
     Villager { kind: String, profession: String, level: u8 },
     /// The horse variant as the entity data sends it: colour in the low byte, markings above.
     Horse { variant: u32 },
@@ -171,7 +171,7 @@ pub enum Data {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entity {
     pub id: i32,
-    /// The entity type's registry name (`minecraft:villager`).
+    /// The entity type's registry name without namespace (`villager`).
     pub kind: &'static str,
     /// Its feet, in world coordinates.
     pub pos: [f64; 3],

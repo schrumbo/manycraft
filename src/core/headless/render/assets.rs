@@ -11,6 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 
 use super::figure::{Models, Sheet};
+use super::skins::Skins;
 use super::model::Source;
 
 const IDLE: Duration = Duration::from_secs(60);
@@ -120,6 +121,8 @@ pub struct Assets {
     pngs: HashMap<String, Vec<u8>>,
     sheets: Mutex<HashMap<String, Option<Arc<Sheet>>>>,
     data: HashMap<String, Value>,
+    /// Player skins fetched for these pictures.
+    pub(super) skins: Skins,
 }
 
 impl Source for Assets {
@@ -147,7 +150,7 @@ impl Assets {
     /// Reads what pictures need from a client jar.
     pub fn from_jar(reader: impl Read + Seek) -> Result<Self> {
         let mut zip = zip::ZipArchive::new(reader).context("not a jar")?;
-        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, moon: Default::default(), vignette: None, figures: Models::load()?, pngs: HashMap::new(), sheets: Mutex::default(), data: HashMap::new() };
+        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, moon: Default::default(), vignette: None, figures: Models::load()?, pngs: HashMap::new(), sheets: Mutex::default(), data: HashMap::new(), skins: Skins::default() };
         let mut bytes = Vec::new();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i)?;

@@ -92,8 +92,22 @@ impl Target {
         !(out(&|v| v[2] < NEAR) || out(&|v| v[0] > v[2] * hw) || out(&|v| v[0] < -v[2] * hw) || out(&|v| v[1] > v[2] * hh) || out(&|v| v[1] < -v[2] * hh))
     }
 
+    /// Forgets all depth, so what is drawn next lies in front of everything drawn so far.
+    pub fn clear_depth(&mut self) {
+        self.depth.fill(f32::INFINITY);
+    }
+
     /// Draws a quad; opaque and cutout ones write depth, translucent ones blend.
     pub fn quad(&mut self, v: &[Vertex; 4], texture: &Texture, mode: Transparency) {
+        self.clipped(v, texture, mode, 1.0);
+    }
+
+    /// Blends a quad over the picture with its texture's alpha times `opacity`, without writing depth.
+    pub fn blend(&mut self, v: &[Vertex; 4], texture: &Texture, opacity: f32) {
+        self.clipped(v, texture, Transparency::Translucent, opacity.clamp(0.0, 1.0));
+    }
+
+    fn clipped(&mut self, v: &[Vertex; 4], texture: &Texture, mode: Transparency, opacity: f32) {
         let mut poly = [Vertex::default(); 8];
         let mut n = 0;
         for i in 0..4 {
@@ -117,7 +131,7 @@ impl Target {
         }
         let level = self.level(&v[..], texture);
         for i in 1..n - 1 {
-            self.triangle(&poly[0], &poly[i], &poly[i + 1], texture, mode, level);
+            self.triangle(&poly[0], &poly[i], &poly[i + 1], texture, mode, level, opacity);
         }
     }
 
@@ -206,7 +220,8 @@ impl Target {
         if lod <= 0.5 { 0 } else { (lod + 0.5) as usize }
     }
 
-    fn triangle(&mut self, a: &Vertex, b: &Vertex, c: &Vertex, texture: &Texture, mode: Transparency, level: usize) {
+    #[allow(clippy::too_many_arguments)]
+    fn triangle(&mut self, a: &Vertex, b: &Vertex, c: &Vertex, texture: &Texture, mode: Transparency, level: usize, opacity: f32) {
         let (cx, cy) = (self.width as f32 * 0.5, self.height as f32 * 0.5);
         let project = |v: &Vertex| {
             let w = 1.0 / v.p[2];
@@ -248,7 +263,7 @@ impl Target {
                     continue;
                 }
                 let texel = texture.sample(at(0) * z, at(1) * z, level);
-                let alpha = f32::from(texel[3]) / 255.0;
+                let alpha = f32::from(texel[3]) / 255.0 * opacity;
                 if mode == Transparency::Cutout && alpha < 0.5 {
                     continue;
                 }

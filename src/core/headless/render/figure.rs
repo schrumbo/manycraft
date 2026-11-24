@@ -317,6 +317,23 @@ impl Painter<'_> {
         }
     }
 
+    /// Draws a quad given in world space relative to the camera, with texture coordinates on `texture`.
+    /// `shade` replaces the entity lighting with a fixed factor, as blocks get from the side they face.
+    pub fn face(&mut self, world: [[f32; 3]; 4], uv: [[f32; 2]; 4], texture: &Texture, paint: &Paint, shade: Option<f32>) {
+        let view = world.map(|p| self.view.to_view(p));
+        if !self.target.visible(&view) {
+            return;
+        }
+        let mut n = cross(sub(world[1], world[0]), sub(world[2], world[0]));
+        if n.iter().all(|c| c.abs() < 1e-12) {
+            n = cross(sub(world[2], world[1]), sub(world[3], world[1]));
+        }
+        let f = shade.unwrap_or_else(|| diffuse(normalize(n)));
+        let c = [0, 1, 2].map(|k| paint.light[k] * paint.tint[k] * f);
+        let v = [0, 1, 2, 3].map(|i| Vertex { p: view[i], uv: uv[i], c });
+        self.target.quad(&v, texture, paint.mode);
+    }
+
     /// Draws one model polygon.
     pub fn poly(&mut self, poly: &[Corner; 4], at: &Affine, sheet: &Sheet, paint: &Paint) {
         let world = poly.map(|c| at.apply(c.p.map(|v| v / 16.0)));

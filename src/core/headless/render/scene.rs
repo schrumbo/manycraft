@@ -317,6 +317,17 @@ impl<'a, W: Blocks> Scene<'a, W> {
         (dx >= 0 && dy >= 0 && dz >= 0 && dx < self.size[0] && dy < self.size[1] && dz < self.size[2]).then(|| ((dy * self.size[2] + dz) * self.size[0] + dx) as usize)
     }
 
+    /// Whether the block at a position fills its whole cell, as shadows need below them.
+    pub fn full(&self, x: i32, y: i32, z: i32) -> bool {
+        self.info(x, y, z).full
+    }
+
+    /// Sky and block light at a position, full sky outside the copied blocks.
+    pub fn light(&self, x: i32, y: i32, z: i32) -> (u8, u8) {
+        let l = self.index(x, y, z).map_or(0xF0, |i| self.light[i]);
+        (l >> 4, l & 15)
+    }
+
     #[inline]
     fn info(&self, x: i32, y: i32, z: i32) -> &Info {
         &self.infos[self.index(x, y, z).map_or(0, |i| usize::from(self.cells[i]))]

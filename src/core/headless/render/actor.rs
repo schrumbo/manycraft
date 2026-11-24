@@ -6,11 +6,13 @@ use std::sync::Arc;
 
 use super::Blocks;
 use super::assets::{Assets, Transparency};
-use super::entity::{Data, Entities, Entity, Pose as Stance, Skin, slot};
+use super::entity::{Data, DisplayKind, Entities, Entity, Pose as Stance, Skin, slot};
 use super::figure::{Affine, Painter, Paint, Part, Pose, Sheet};
+use super::item::{Context, Model};
 use super::light::{self, Lightmap};
 use super::raster::Target;
-use super::scene::View;
+use super::raster::Vertex;
+use super::scene::{Scene, View};
 
 const DYES: [u32; 16] = [0xF9FFFE, 0xF9801D, 0xC74EBD, 0x3AB3DA, 0xFED83D, 0x80C71F, 0xF38BAA, 0x474F52, 0x9D9D97, 0x169C9C, 0x8932B8, 0x3C44AA, 0x835432, 0x5E7C16, 0xB02E26, 0x1D1D21];
 const SKINS: [&str; 9] = ["alex", "ari", "efe", "kai", "makena", "noor", "steve", "sunny", "zuri"];
@@ -19,6 +21,7 @@ const MARKINGS: [&str; 5] = ["", "white", "whitefield", "whitedots", "blackdots"
 const LEVELS: [&str; 5] = ["stone", "iron", "gold", "emerald", "diamond"];
 const INVISIBLE: u8 = 0x20;
 const WHITE: [f32; 3] = [1.0; 3];
+const GRASS: u32 = 0x91BD59;
 
 /// One model layer drawn with one sheet.
 struct Coat<'a> {
@@ -35,13 +38,15 @@ struct Figure<'a> {
     coats: Vec<Coat<'a>>,
     scale: [f32; 3],
     rig: Rig,
+    slim: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Rig {
     Plain,
     Humanoid,
     Zombie,
+    Stand([[f32; 3]; 6]),
 }
 
 fn rgb(c: u32) -> [f32; 3] {
@@ -104,6 +109,7 @@ fn figure<'a>(e: &Entity, assets: &'a Assets, skin: Option<&Arc<Sheet>>) -> Opti
     let mut b = Builder { assets, coats: Vec::new() };
     let mut scale = [1.0; 3];
     let mut rig = Rig::Plain;
+    let mut slim = false;
     let suffix = if baby { "_baby" } else { "" };
     match (kind, &e.data) {
         ("player", data) => {
@@ -112,7 +118,7 @@ fn figure<'a>(e: &Entity, assets: &'a Assets, skin: Option<&Arc<Sheet>>) -> Opti
                 _ => Skin::default(),
             };
             let (fallback, fallback_slim) = default_skin(&skin_data);
-            let slim = if skin.is_some() { skin_data.slim } else { fallback_slim };
+            slim = if skin.is_some() { skin_data.slim } else { fallback_slim };
             let layer = if slim { "minecraft:player_slim#main" } else { "minecraft:player#main" };
             let part = assets.figures.layer(layer)?;
             let sheet = match skin {
@@ -221,6 +227,21 @@ fn figure<'a>(e: &Entity, assets: &'a Assets, skin: Option<&Arc<Sheet>>) -> Opti
             b.layer("minecraft:enderman#main", "entity/enderman/enderman_eyes", WHITE, Transparency::Cutout, true, &[]);
             rig = Rig::Humanoid;
         }
+        ("armor_stand", data) => {
+            let (small, arms, no_plate, poses) = match data {
+                Data::ArmorStand { small, arms, no_plate, poses, .. } => (*small, *arms, *no_plate, *poses),
+                _ => (false, false, false, STAND),
+            };
+            let hide: &'static [&'static str] = match (arms, no_plate) {
+                (true, true) => &["hat", "base_plate"],
+                (true, false) => &["hat"],
+                (false, true) => &["hat", "base_plate", "right_arm", "left_arm"],
+                (false, false) => &["hat", "right_arm", "left_arm"],
+            };
+            let layer = if small { "minecraft:armor_stand_small#main" } else { "minecraft:armor_stand#main" };
+            b.layer(layer, "entity/armorstand/armorstand", WHITE, Transparency::Cutout, false, hide);
+            rig = Rig::Stand(poses);
+        }
         ("spider" | "cave_spider", _) => {
             b.coat(&format!("minecraft:{kind}#main"), &format!("entity/spider/{kind}"), WHITE);
             b.layer(&format!("minecraft:{kind}#main"), "entity/spider/spider_eyes", WHITE, Transparency::Cutout, true, &[]);
@@ -248,7 +269,7 @@ fn figure<'a>(e: &Entity, assets: &'a Assets, skin: Option<&Arc<Sheet>>) -> Opti
             };
         }
     }
-    (!b.coats.is_empty()).then_some(Figure { coats: b.coats, scale, rig })
+    (!b.coats.is_empty()).then_some(Figure { coats: b.coats, scale, rig, slim })
 }
 
 fn hidden_parts(parts: u8) -> &'static [&'static str] {
@@ -259,12 +280,27 @@ fn hidden_parts(parts: u8) -> &'static [&'static str] {
     &table[usize::from(parts & 0x7F)]
 }
 
+const STAND: [[f32; 3]; 6] = [[0.0; 3], [0.0; 3], [-10.0, 0.0, -10.0], [-15.0, 0.0, 10.0], [-1.0, 0.0, -1.0], [1.0, 0.0, 1.0]];
+
 fn wrap(degrees: f32) -> f32 {
     (degrees + 180.0).rem_euclid(360.0) - 180.0
 }
 
 /// Changes a part's pose the way the entity's model does when it stands still.
 fn pose(rig: Rig, e: &Entity, name: &str, p: &mut Pose) {
+    if let Rig::Stand(poses) = rig {
+        let index = match name {
+            "head" => 0,
+            "body" | "left_body_stick" | "right_body_stick" | "shoulder_stick" => 1,
+            "left_arm" => 2,
+            "right_arm" => 3,
+            "left_leg" => 4,
+            "right_leg" => 5,
+            _ => return,
+        };
+        p.rotation = poses[index].map(f32::to_radians);
+        return;
+    }
     let head_yaw = wrap(e.head_yaw - e.yaw).to_radians();
     let pitch = e.pitch.to_radians();
     let crouch = e.pose == Stance::Crouching;
@@ -319,22 +355,339 @@ fn placement(e: &Entity, eye: [f64; 3], scale: [f32; 3]) -> Affine {
     Affine::at(rel).rotate_y((180.0 - e.yaw).to_radians()).scale([-1.0, -1.0, 1.0]).scale(scale).translate([0.0, -1.501, 0.0])
 }
 
-/// Draws every entity within `reach` blocks of the camera.
-pub fn draw(entities: &impl Entities, world: &impl Blocks, assets: &Assets, lightmap: &Lightmap, view: &View, target: &mut Target, reach: f32, skins: &dyn Fn(&Skin) -> Option<Arc<Sheet>>) {
+/// The transform of part `name` inside `part`, posed like the drawn model.
+fn locate(part: &Part, name: &str, at: &Affine, pose: &mut dyn FnMut(&str, &mut Pose)) -> Option<Affine> {
+    let mut own = part.pose;
+    pose(&part.name, &mut own);
+    let at = at.part(&own);
+    if &*part.name == name {
+        return Some(at);
+    }
+    part.children.iter().find_map(|c| locate(c, name, &at, pose))
+}
+
+fn equipment_asset(item: &str) -> Option<&'static str> {
+    let name = plain(item);
+    let (material, piece) = name.rsplit_once('_')?;
+    if !matches!(piece, "helmet" | "chestplate" | "leggings" | "boots") {
+        return None;
+    }
+    Some(match material {
+        "leather" => "leather",
+        "chainmail" => "chainmail",
+        "iron" => "iron",
+        "golden" => "gold",
+        "diamond" => "diamond",
+        "netherite" => "netherite",
+        "copper" => "copper",
+        "turtle" => "turtle_scute",
+        _ => return None,
+    })
+}
+
+/// Draws the armor an entity wears over its model.
+#[allow(clippy::too_many_arguments)]
+fn armor(painter: &mut Painter, assets: &Assets, e: &Entity, kind: &str, slim: bool, rig: Rig, at: &Affine, light: [f32; 3]) {
+    const SLOTS: [(usize, &str, &str); 4] = [(slot::FEET, "boots", "humanoid"), (slot::LEGS, "leggings", "humanoid_leggings"), (slot::CHEST, "chestplate", "humanoid"), (slot::HEAD, "helmet", "humanoid")];
+    let owner = match (kind, slim, e.baby) {
+        ("player", true, _) => "player_slim".to_string(),
+        (_, _, true) => format!("{kind}_baby"),
+        _ => kind.to_string(),
+    };
+    for (index, layer_name, kind_key) in SLOTS {
+        let Some(item) = &e.equipment[index] else { continue };
+        let Some(asset) = equipment_asset(item.id) else { continue };
+        let Some(layers) = assets.data(&format!("equipment/{asset}")).and_then(|d| d.pointer(&format!("/layers/{kind_key}"))).and_then(|l| l.as_array()) else { continue };
+        let figures = &assets.figures;
+        let Some(part) = figures.layer(&format!("minecraft:{owner}#{layer_name}")).or_else(|| figures.layer(&format!("minecraft:player#{layer_name}"))) else { continue };
+        for layer in layers {
+            let Some(texture) = layer.get("texture").and_then(|t| t.as_str()) else { continue };
+            let Some(sheet) = assets.sheet(&format!("entity/equipment/{kind_key}/{}", plain(texture))) else { continue };
+            let tint = match layer.get("dyeable") {
+                Some(d) => item.dye.map(rgb).or_else(|| d.get("color_when_undyed").and_then(|c| c.as_i64()).map(|c| rgb(c as u32))).unwrap_or(WHITE),
+                None => WHITE,
+            };
+            let paint = Paint { light, tint, mode: Transparency::Cutout };
+            painter.part(part, at, &sheet, &paint, &mut |name, p| {
+                pose(rig, e, name, p);
+                true
+            });
+        }
+    }
+}
+
+/// Draws what an entity holds in its hands.
+#[allow(clippy::too_many_arguments)]
+fn held(painter: &mut Painter, assets: &Assets, e: &Entity, part: &Part, slim: bool, rig: Rig, at: &Affine, light: [f32; 3]) {
+    let main_left = matches!(e.data, Data::Player { main_left: true, .. });
+    for (index, main) in [(slot::MAIN_HAND, true), (slot::OFF_HAND, false)] {
+        let Some(item) = &e.equipment[index] else { continue };
+        let Some(model) = Model::of(assets, item) else { continue };
+        let left = main == main_left;
+        let arm = if left { "left_arm" } else { "right_arm" };
+        let shift = if slim { if left { -0.5 } else { 0.5 } } else { 0.0 };
+        let Some(hand) = locate(part, arm, at, &mut |name, p| {
+            pose(rig, e, name, p);
+            if name == arm {
+                p.pivot[0] += shift;
+            }
+        }) else {
+            continue;
+        };
+        let baby = e.baby && plain(e.kind) != "armor_stand";
+        let (ox, oy, oz) = if baby { (0.0, 1.0, -4.5) } else { (1.0, 2.0, -10.0) };
+        let hand = hand.rotate_x(-PI / 2.0).rotate_y(PI).translate([if left { -ox } else { ox } / 16.0, oy / 16.0, oz / 16.0]);
+        model.draw(painter, assets, &hand, if left { Context::ThirdLeft } else { Context::ThirdRight }, light);
+    }
+}
+
+fn step(facing: u8) -> [f32; 3] {
+    match facing {
+        0 => [0.0, -1.0, 0.0],
+        1 => [0.0, 1.0, 0.0],
+        2 => [0.0, 0.0, -1.0],
+        3 => [0.0, 0.0, 1.0],
+        4 => [-1.0, 0.0, 0.0],
+        _ => [1.0, 0.0, 0.0],
+    }
+}
+
+fn y_rot(facing: u8) -> f32 {
+    match facing {
+        2 => 180.0,
+        3 => 0.0,
+        4 => 90.0,
+        _ => 270.0,
+    }
+}
+
+/// Draws an item frame and what it holds.
+fn frame(painter: &mut Painter, assets: &Assets, e: &Entity, light: [f32; 3]) {
+    let Data::Frame { item, rotation, facing, glow, invisible } = &e.data else { return };
+    let rel = [0, 1, 2].map(|k| (e.pos[k] - painter.view.eye[k]) as f32);
+    let d = step(*facing);
+    let (x_rot, y_rot) = if *facing >= 2 { (0.0, 180.0 - y_rot(*facing)) } else { (-90.0 * d[1], 180.0) };
+    let at = Affine::at(rel).translate(d.map(|v| v * 0.46875)).rotate_x(x_rot.to_radians()).rotate_y(y_rot.to_radians());
+    if !invisible {
+        let name = if *glow { "glow_item_frame" } else { "item_frame" };
+        let map = item.as_ref().is_some_and(|i| plain(i.id) == "filled_map");
+        let variant = super::model::Variant { model: format!("block/{name}{}", if map { "_map" } else { "" }), x: 0, y: 0, uvlock: false };
+        block_model(painter, assets, &variant, &at.translate([-0.5, -0.5, -0.5]), light);
+    }
+    let Some(item) = item else { return };
+    let Some(model) = Model::of(assets, item) else { return };
+    let at = at.translate([0.0, 0.0, if *invisible { 0.5 } else { 0.4375 }]).rotate_z((f32::from(*rotation) * 45.0).to_radians()).scale([0.5; 3]);
+    model.draw(painter, assets, &at, Context::Fixed, if *glow { WHITE } else { light });
+}
+
+fn block_model(painter: &mut Painter, assets: &Assets, variant: &super::model::Variant, at: &Affine, light: [f32; 3]) {
+    for q in super::model::bake(assets, variant) {
+        let Some(id) = assets.texture_id(&q.texture) else { continue };
+        let tint = if q.tint >= 0 { rgb(GRASS) } else { WHITE };
+        let shade = q.shade.map_or(1.0, |d| d.shade());
+        let light = if q.emission > 0 { WHITE } else { light };
+        painter.face(q.pos.map(|p| at.apply(p)), q.uv, assets.texture(id), &Paint { light, tint, mode: Transparency::Cutout }, Some(shade));
+    }
+}
+
+/// Draws a block, item or text display entity.
+fn display(painter: &mut Painter, assets: &Assets, e: &Entity, lightmap: &Lightmap, lit: [f32; 3]) {
+    let Data::Display { common, kind } = &e.data else { return };
+    let light = common.brightness.map_or(lit, |(sky, block)| lightmap.color(light::pack(sky.min(15), block.min(15))));
+    let f = painter.view.forward;
+    let camera_yaw = (-f[0]).atan2(f[2]).to_degrees();
+    let camera_pitch = (-f[1]).clamp(-1.0, 1.0).asin().to_degrees();
+    let (yaw, pitch) = match common.billboard {
+        1 => (camera_yaw - 180.0, e.pitch),
+        2 => (e.yaw, -camera_pitch),
+        3 => (camera_yaw - 180.0, -camera_pitch),
+        _ => (e.yaw, e.pitch),
+    };
+    let rel = [0, 1, 2].map(|k| (e.pos[k] - painter.view.eye[k]) as f32);
+    let scale = common.scale.map(|s| if s.is_finite() { s.clamp(-64.0, 64.0) } else { 1.0 });
+    let translation = common.translation.map(|t| if t.is_finite() { t.clamp(-64.0, 64.0) } else { 0.0 });
+    let at = Affine::at(rel).rotate_y((-yaw).to_radians()).rotate_x(pitch.to_radians()).translate(translation).quat(common.left_rotation).scale(scale).quat(common.right_rotation);
+    match kind {
+        DisplayKind::Block { state } => {
+            let Some(state) = super::block::decode(*state) else { return };
+            let Some(blockstate) = super::model::Source::blockstate(assets, state.name) else { return };
+            for variant in super::model::variants(blockstate, &state, 0) {
+                block_model(painter, assets, &variant, &at, light);
+            }
+        }
+        DisplayKind::Item { item: Some(item), transform } => {
+            let Some(model) = Model::of(assets, item) else { return };
+            model.draw(painter, assets, &at.rotate_y(PI), Context::from_id(*transform), light);
+        }
+        _ => {}
+    }
+}
+
+/// How far an entity's shadow reaches and how dark it is, as its renderer sets them.
+fn shadow_of(e: &Entity) -> (f32, f32) {
+    let radius = match plain(e.kind) {
+        "item" => return (0.15, 0.75),
+        "block_display" | "item_display" | "text_display" => return match &e.data {
+            Data::Display { common, .. } => (common.shadow_radius, common.shadow_strength),
+            _ => (0.0, 0.0),
+        },
+        "slime" | "magma_cube" => match e.data {
+            Data::Slime { size } => 0.25 * f32::from(size.clamp(1, 16)),
+            _ => 0.25,
+        },
+        "cow" | "mooshroom" | "pig" | "sheep" | "iron_golem" | "panda" | "polar_bear" | "cave_spider" | "goat" | "camel" | "sniffer" | "turtle" => 0.7,
+        "horse" | "donkey" | "mule" | "skeleton_horse" | "zombie_horse" | "llama" | "trader_llama" => 0.75,
+        "spider" => 0.8,
+        "chicken" | "rabbit" | "frog" | "parrot" | "bat" | "allay" | "vex" | "silverfish" | "endermite" | "bee" => 0.3,
+        "cat" | "ocelot" | "fox" => 0.4,
+        "armor_stand" | "item_frame" | "glow_item_frame" | "marker" | "interaction" => 0.0,
+        _ => 0.5,
+    };
+    (if e.baby { radius * 0.5 } else { radius }, 1.0)
+}
+
+/// Darkens the ground under an entity with the game's round shadow.
+#[allow(clippy::too_many_arguments)]
+fn shadow<W: Blocks>(painter: &mut Painter, scene: &Scene<'_, W>, sheet: &Sheet, e: &Entity, radius: f32, strength: f32) {
+    let radius = radius.min(32.0);
+    let d = [0, 1, 2].map(|k| e.pos[k] - painter.view.eye[k]);
+    let pow = ((1.0 - (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) / 256.0) as f32) * strength;
+    if radius <= 0.0 || pow <= 0.0 {
+        return;
+    }
+    let depth = (pow / 0.5 - 1.0).min(radius);
+    let r = f64::from(radius);
+    let (x0, x1, z0, z1) = ((e.pos[0] - r).floor() as i32, (e.pos[0] + r).floor() as i32, (e.pos[2] - r).floor() as i32, (e.pos[2] + r).floor() as i32);
+    let (y0, y1) = ((e.pos[1] - f64::from(depth)).floor() as i32, e.pos[1].floor() as i32);
+    for z in z0..=z1 {
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                if !scene.full(x, y - 1, z) {
+                    continue;
+                }
+                let (sky, block) = scene.light(x, y, z);
+                let brightness = sky.max(block);
+                if brightness <= 3 {
+                    continue;
+                }
+                let level = f32::from(brightness) / 15.0;
+                let alpha = ((pow - (e.pos[1] - f64::from(y)) as f32 * 0.5) * 0.5 * level / (4.0 - 3.0 * level)).clamp(0.0, 1.0);
+                if alpha <= 0.0 {
+                    continue;
+                }
+                let (ax, bx) = (f64::from(x).max(e.pos[0] - r), f64::from(x + 1).min(e.pos[0] + r));
+                let (az, bz) = (f64::from(z).max(e.pos[2] - r), f64::from(z + 1).min(e.pos[2] + r));
+                if ax >= bx || az >= bz {
+                    continue;
+                }
+                let corner = |cx: f64, cz: f64| [(cx - painter.view.eye[0]) as f32, (f64::from(y) - painter.view.eye[1]) as f32 + 0.001, (cz - painter.view.eye[2]) as f32];
+                let uv = |cx: f64, cz: f64| [(0.5 - (cx - e.pos[0]) / 2.0 / r) as f32, (0.5 - (cz - e.pos[2]) / 2.0 / r) as f32];
+                let world_pos = [corner(ax, az), corner(ax, bz), corner(bx, bz), corner(bx, az)];
+                let uvs = [uv(ax, az), uv(ax, bz), uv(bx, bz), uv(bx, az)];
+                let view = world_pos.map(|p| painter.view.to_view(p));
+                if !painter.target.visible(&view) {
+                    continue;
+                }
+                let v = [0, 1, 2, 3].map(|i| Vertex { p: view[i], uv: uvs[i], c: WHITE });
+                painter.target.blend(&v, &sheet.texture, alpha);
+            }
+        }
+    }
+}
+
+/// Draws an item lying on the ground.
+fn dropped(painter: &mut Painter, assets: &Assets, e: &Entity, light: [f32; 3]) {
+    let Data::Item { item } = &e.data else { return };
+    let Some(model) = Model::of(assets, item) else { return };
+    let ground = model.placed(&Affine::IDENTITY, Context::Ground);
+    let low = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0]].iter().map(|p| ground.apply(*p)[1]).fold(f32::MAX, f32::min);
+    let rel = [0, 1, 2].map(|k| (e.pos[k] - painter.view.eye[k]) as f32);
+    let at = Affine::at(rel).translate([0.0, 0.1 - low + 0.0625, 0.0]).rotate_y(e.yaw.to_radians());
+    model.draw(painter, assets, &at, Context::Ground, light);
+}
+
+/// Draws the account's own hand and held item over the picture, as the game shows them in first person.
+pub fn hand<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &Assets, lightmap: &Lightmap, view: &View, target: &mut Target) {
+    let Some(hand) = entities.hand() else { return };
+    let eye = view.eye.map(|v| v.floor() as i32);
+    let (sky, block) = scene.light(eye[0], eye[1], eye[2]);
+    let light = lightmap.color(light::pack(sky, block));
+    let camera = Affine { m: [0, 1, 2].map(|r| [view.right[r], view.up[r], -view.forward[r]]), t: [0.0; 3] };
+    let left = hand.left_handed;
+    let invert = if left { -1.0 } else { 1.0 };
+    target.clear_depth();
     let mut painter = Painter { target, view };
+    if let Some(item) = &hand.main {
+        if let Some(model) = Model::of(assets, item) {
+            let at = camera.translate([invert * 0.56, -0.52, -0.72]);
+            model.draw(&mut painter, assets, &at, if left { Context::FirstLeft } else { Context::FirstRight }, light);
+        }
+        return;
+    }
+    let (fallback, fallback_slim) = default_skin(&hand.skin);
+    let fetched = hand.skin.url.as_deref().and_then(|u| assets.skins.get(u));
+    let slim = if fetched.is_some() { hand.skin.slim } else { fallback_slim };
+    let Some(sheet) = fetched.or_else(|| assets.sheet(&fallback)) else { return };
+    let Some(model) = assets.figures.layer(if slim { "minecraft:player_slim#main" } else { "minecraft:player#main" }) else { return };
+    let arm_name = if left { "left_arm" } else { "right_arm" };
+    let Some(arm) = model.find(arm_name) else { return };
+    let at = camera
+        .translate([invert * 0.64, -0.6, -0.72])
+        .rotate_y((invert * 45.0f32).to_radians())
+        .translate([invert * -1.0, 3.6, 3.5])
+        .rotate_z((invert * 120.0f32).to_radians())
+        .rotate_x(200.0f32.to_radians())
+        .rotate_y((invert * -135.0f32).to_radians())
+        .translate([invert * 5.6, 0.0, 0.0]);
+    let hide = hidden_parts(hand.skin.parts);
+    painter.part(arm, &at, &sheet, &Paint { light, tint: WHITE, mode: Transparency::Cutout }, &mut |name, p| {
+        if hide.contains(&name) {
+            return false;
+        }
+        if name == arm_name {
+            p.rotation = [0.0; 3];
+        }
+        true
+    });
+}
+
+/// Draws every entity within `reach` blocks of the camera.
+pub fn draw<W: Blocks>(entities: &impl Entities, scene: &Scene<'_, W>, assets: &Assets, lightmap: &Lightmap, view: &View, target: &mut Target, reach: f32) {
+    let mut painter = Painter { target, view };
+    let shadow_sheet = assets.sheet("misc/shadow");
     for e in entities.entities() {
         let d = [0, 1, 2].map(|k| (e.pos[k] - view.eye[k]) as f32);
         if !d.iter().all(|v| v.is_finite()) || d[0].abs() > reach || d[2].abs() > reach || d[1].abs() > 384.0 || e.flags & INVISIBLE != 0 {
             continue;
         }
         let skin = match &e.data {
-            Data::Player { skin, .. } if skin.url.is_some() => skins(skin),
+            Data::Player { skin: Skin { url: Some(url), .. }, .. } => assets.skins.get(url),
             _ => None,
         };
-        let Some(figure) = figure(e, assets, skin.as_ref()) else { continue };
         let probe = [e.pos[0].floor() as i32, (e.pos[1] + 0.5).floor() as i32, e.pos[2].floor() as i32];
-        let (sky, block) = world.light(probe[0], probe[1], probe[2]).unwrap_or((15, 0));
+        let (sky, block) = scene.light(probe[0], probe[1], probe[2]);
         let lit = lightmap.color(light::pack(sky, block));
+        let kind = plain(e.kind);
+        if let Some(sheet) = &shadow_sheet {
+            let (radius, strength) = shadow_of(e);
+            shadow(&mut painter, scene, sheet, e, radius, strength);
+        }
+        match kind {
+            "item" => {
+                dropped(&mut painter, assets, e, lit);
+                continue;
+            }
+            "item_frame" | "glow_item_frame" => {
+                frame(&mut painter, assets, e, lit);
+                continue;
+            }
+            "block_display" | "item_display" | "text_display" => {
+                display(&mut painter, assets, e, lightmap, lit);
+                continue;
+            }
+            _ => {}
+        }
+        let Some(figure) = figure(e, assets, skin.as_ref()) else { continue };
         let at = placement(e, view.eye, figure.scale);
         for coat in &figure.coats {
             let paint = Paint { light: if coat.glow { WHITE } else { lit }, tint: coat.tint, mode: coat.mode };
@@ -347,6 +700,12 @@ pub fn draw(entities: &impl Entities, world: &impl Blocks, assets: &Assets, ligh
                 pose(rig, e, name, p);
                 true
             });
+        }
+        if figure.rig != Rig::Plain {
+            armor(&mut painter, assets, e, kind, figure.slim, figure.rig, &at, lit);
+            if let Some(coat) = figure.coats.first() {
+                held(&mut painter, assets, e, coat.part, figure.slim, figure.rig, &at, lit);
+            }
         }
     }
 }

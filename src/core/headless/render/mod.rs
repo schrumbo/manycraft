@@ -11,6 +11,8 @@ mod actor;
 mod block;
 mod entity;
 mod figure;
+mod item;
+mod skins;
 mod light;
 mod model;
 mod random;
@@ -164,8 +166,9 @@ pub fn render(world: &impl Blocks, biomes: &[Biome], entities: &impl Entities, c
     let mut scene = Scene::new(world, assets, biomes, camera.pos, i32::from(distance));
     let mut later = Later::default();
     scene.draw(&view, &lightmap, &mut target, &mut later);
-    actor::draw(entities, world, assets, &lightmap, &view, &mut target, end + 16.0, &|_| None);
+    actor::draw(entities, &scene, assets, &lightmap, &view, &mut target, end + 16.0);
     later.draw(&mut target);
+    actor::hand(entities, &scene, assets, &lightmap, &view, &mut target);
     if let Some(texture) = &assets.vignette {
         let (sky_light, block_light) = world.light(eye[0], eye[1], eye[2]).unwrap_or((15, 0));
         target.vignette(texture, light::vignette(sky_light, block_light, light::sky_level(time, sky.rain, sky.thunder)));
@@ -278,6 +281,18 @@ mod tests {
         }
     }
 
+    struct Holding(Vec<Entity>, Hand);
+
+    impl Entities for Holding {
+        fn entities(&self) -> &[Entity] {
+            &self.0
+        }
+
+        fn hand(&self) -> Option<&Hand> {
+            Some(&self.1)
+        }
+    }
+
     fn item(id: &str) -> Item {
         Item { id: Box::leak(format!("minecraft:{id}").into_boxed_str()), count: 1, glint: false, dye: None, trim: None, profile: None }
     }
@@ -304,6 +319,19 @@ mod tests {
             "wolf" => Data::Wolf { tame: flag("tame"), collar: 14, variant: kv("variant").unwrap_or("pale").into() },
             "cat" => Data::Cat { variant: kv("variant").unwrap_or("tabby").into(), collar: 14 },
             "slime" | "magma_cube" => Data::Slime { size: kv("size").and_then(|v| v.parse().ok()).unwrap_or(1) },
+            "item" => Data::Item { item: item(kv("item")?) },
+            "item_frame" | "glow_item_frame" => Data::Frame { item: kv("item").map(item), rotation: kv("rot").and_then(|v| v.parse().ok()).unwrap_or(0), facing: kv("facing").and_then(|v| v.parse().ok()).unwrap_or(3), glow: f[0] == "glow_item_frame", invisible: flag("invisible") },
+            "armor_stand" => Data::ArmorStand { small: flag("small"), arms: flag("arms"), no_plate: false, marker: false, poses: [[0.0; 3], [0.0; 3], [-10.0, 0.0, -10.0], [-15.0, 0.0, 10.0], [-1.0, 0.0, -1.0], [1.0, 0.0, 1.0]] },
+            "block_display" | "item_display" => {
+                let scale = kv("scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                let common = Display { scale: [scale; 3], billboard: kv("billboard").and_then(|v| v.parse().ok()).unwrap_or(0), ..Display::default() };
+                let kind = if f[0] == "block_display" {
+                    DisplayKind::Block { state: block::encode(kv("block")?, &[])? }
+                } else {
+                    DisplayKind::Item { item: kv("item").map(item), transform: kv("transform").and_then(|v| v.parse().ok()).unwrap_or(0) }
+                };
+                Data::Display { common, kind }
+            }
             _ => kv("variant").map(|v| Data::Variant(v.into())).unwrap_or_default(),
         };
         Some(Entity {
@@ -326,7 +354,7 @@ mod tests {
     fn a_crowd_of_mobs_draws_inside_the_budget() {
         let Some(jar) = jar() else { return };
         let assets = Assets::open(&jar).unwrap();
-        let kinds = ["player", "villager profession=farmer level=2", "zombie", "skeleton main=bow", "creeper", "cow", "pig", "sheep color=14", "chicken", "horse variant=258", "wolf tame", "cat", "iron_golem", "enderman", "spider", "slime size=2"];
+        let kinds = ["player main=diamond_sword off=shield head=iron_helmet chest=diamond_chestplate", "villager profession=farmer level=2", "zombie main=iron_shovel legs=golden_leggings feet=leather_boots", "skeleton main=bow", "creeper", "cow", "pig", "sheep color=14", "chicken", "horse variant=258", "wolf tame", "cat", "iron_golem", "enderman", "spider", "slime size=2", "armor_stand arms head=diamond_helmet chest=iron_chestplate main=apple", "item item=diamond", "item item=oak_log", "item_frame item=compass facing=2", "block_display block=glowstone scale=0.5", "item_display item=golden_apple billboard=1", "player sneak main=torch uuid=00000000-0000-0000-0000-00000000000f", "item_frame item=stone rot=1 facing=2"];
         let row: Vec<Entity> = kinds.iter().enumerate().filter_map(|(i, k)| {
             let (kind, rest) = k.split_once(' ').unwrap_or((k, ""));
             crowd_entity(&format!("{kind} {} 63 {} 180 {rest}", (i % 8) as f64 * 2.0 - 7.0, 8.0 + (i / 8) as f64 * 3.0))
@@ -338,6 +366,15 @@ mod tests {
         let out = crate::core::paths::data_dir().join("..").join("render-crowd.png");
         image.save(std::env::temp_dir().join("manycraft-render-crowd.png")).ok();
         let _ = out;
+        let props: Vec<Entity> = row.iter().skip(16).enumerate().map(|(i, e)| { let mut e = e.clone(); e.pos = [i as f64 * 1.2 - 4.0, 63.0 + if matches!(e.data, Data::Frame { .. } | Data::Display { .. }) { 1.0 } else { 0.0 }, 4.0]; e }).collect();
+        render(&Flat, &[Biome::default()], &Crowd(props), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join("manycraft-render-props.png")).ok();
+        let solo = vec![crowd_entity("player 0.5 63 3.5 180 main=diamond_sword").unwrap()];
+        render(&Flat, &[Biome::default()], &Crowd(solo.clone()), &Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-front.png")).ok();
+        render(&Flat, &[Biome::default()], &Crowd(solo), &Camera { pos: [3.5, 64.62, 3.5], yaw: 90.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-side.png")).ok();
+        for (name, main) in [("sword", Some(item("diamond_sword"))), ("empty", None), ("block", Some(item("oak_log")))] {
+            let hand = Hand { main, left_handed: false, skin: Skin { parts: 0x7F, ..Skin::default() } };
+            render(&Flat, &[Biome::default()], &Holding(row.clone(), hand), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join(format!("manycraft-render-hand-{name}.png"))).ok();
+        }
         let changed = bare.pixels().zip(image.pixels()).filter(|(a, b)| a != b).count();
         assert!(changed > 640 * 360 / 20, "the mobs cover part of the picture: {changed}");
         let many: Vec<Entity> = (0..200).map(|i| { let mut e = row[i % row.len()].clone(); e.pos = [(i % 20) as f64 - 10.0, 63.0, 6.0 + (i / 20) as f64 * 2.0]; e }).collect();
