@@ -1,359 +1,181 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use freya::elements::image::ImageHandle;
-use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
-use image::RgbaImage;
 use uuid::Uuid;
 
-use super::text::{done_text, problem, signs_in_again};
+use super::desk::{Desk, Hung, Look, Views, handle, ticket};
+use super::lane::{Lane, Op};
+use super::text::problem;
 use crate::core::account::{Account, AccountKind};
 use crate::core::i18n::{tr, trf};
 use crate::core::skin_change::{self as change, Model};
-use crate::core::wardrobe::{self, Fetched, Outfit, Skin, Told};
-use crate::core::{drive, skin};
+use crate::core::wardrobe::{self, Added, Fetched};
+use crate::core::drive;
 use crate::ui::forms::Problem;
 use crate::view::kit::{off_thread, toast};
 use crate::view::store::Store;
 
-const FACE_SCALE: u32 = 4;
-
-/// A skin of the library with its small picture.
-#[derive(Clone, PartialEq)]
-pub struct Hung {
-    pub skin: Skin,
-    pub thumb: ImageHandle,
-}
-
-/// A cape the account owns.
-#[derive(Clone, PartialEq)]
-pub struct Owns {
-    pub id: String,
-    pub alias: String,
-    pub thumb: Option<ImageHandle>,
-    pub front: Option<RgbaImage>,
-}
-
-/// What the stage shows of the chosen account.
-#[derive(Clone)]
-pub struct Look {
-    pub skin: Option<RgbaImage>,
-    pub model: Model,
-    pub worn: Option<String>,
-    pub capes: Vec<Owns>,
-    pub cape: Option<String>,
-    pub microsoft: bool,
-    pub known: bool,
-}
-
-/// Where the account's outfit comes from right now.
-#[derive(Clone, PartialEq)]
-pub enum Phase {
-    Idle,
-    Refreshing,
-    Failed(Problem, bool),
-}
-
-pub type Views = Option<(ImageHandle, ImageHandle)>;
-
-struct Data {
-    skin: Option<RgbaImage>,
-    model: Model,
-    worn: Option<String>,
-    capes: Vec<(String, String, Option<RgbaImage>)>,
-    cape: Option<String>,
-    microsoft: bool,
-    known: bool,
-}
-
-fn data(account: &Account, outfit: Option<&Outfit>) -> Data {
-    if account.kind != AccountKind::Microsoft {
-        let own = wardrobe::default_for(account.id);
-        return Data { worn: own.as_ref().map(|(image, _)| wardrobe::file_of(image)), model: own.as_ref().map(|(_, m)| *m).unwrap_or_default(), skin: own.map(|(image, _)| image), capes: Vec::new(), cape: None, microsoft: false, known: true };
-    }
-    let Some(outfit) = outfit else {
-        return Data { skin: None, model: Model::Classic, worn: None, capes: Vec::new(), cape: None, microsoft: true, known: false };
-    };
-    let skin = outfit.skin.as_deref().and_then(wardrobe::texture);
-    Data {
-        worn: skin.as_ref().map(wardrobe::file_of),
-        skin,
-        model: outfit.model,
-        capes: outfit.capes.iter().map(|c| (c.id.clone(), c.alias.clone(), wardrobe::texture(&c.texture).and_then(|t| change::cape_front(&t)))).collect(),
-        cape: outfit.cape.clone(),
-        microsoft: true,
-        known: true,
-    }
-}
-
-pub fn handle(image: &RgbaImage) -> Option<ImageHandle> {
-    ImageHandle::from_rgba(image.width(), image.height(), Bytes::from(image.as_raw().clone()), AlphaType::Unpremul)
-}
-
-fn show_face(store: Store, id: Uuid, face: Vec<u8>) {
-    let Some(image) = RgbaImage::from_raw(skin::SIDE, skin::SIDE, face) else { return };
-    if let Some(shown) = handle(&change::scaled(&image, FACE_SCALE)) {
-        let mut faces = store.faces;
-        faces.write().insert(id, shown);
-    }
-}
-
 async fn ask() -> Option<PathBuf> {
     rfd::AsyncFileDialog::new().set_title(tr("Skin wählen")).add_filter(tr("PNG-Bild"), &["png"]).pick_file().await.map(|f| f.path().to_path_buf())
+}
+
+/// Why the skin being worn cannot be removed.
+pub fn keep_text() -> String {
+    tr("Dieser Skin ist angezogen. Zieh erst einen anderen an.")
 }
 
 fn looks_like_link(input: &str) -> bool {
     input.contains('/') || input.contains('.')
 }
 
-/// Everything the Wardrobe page does: it holds the page's state and runs the work off the UI thread.
+/// A skin that was added, with what the shelf needs to show it at once.
+type Arrived = (Added, Vec<u8>, image::RgbaImage);
+
+fn store(checked: Vec<(Fetched, image::RgbaImage)>) -> (Vec<Arrived>, Option<anyhow::Error>) {
+    let mut arrived = Vec::new();
+    for (f, front) in checked {
+        match wardrobe::add(&f) {
+            Ok(added) => arrived.push((added, f.png, front)),
+            Err(e) => return (arrived, Some(e)),
+        }
+    }
+    (arrived, None)
+}
+
+/// What the Wardrobe page does: it holds the page's own state, such as the text being typed, and hands everything that
+/// touches accounts or the library to the [Desk], which works in the shared state.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Ctl {
     pub store: Store,
-    pub chosen: State<Option<Uuid>>,
-    pub shelf: State<Vec<Hung>>,
-    pub look: State<Option<Look>>,
-    pub phase: State<Phase>,
-    pub views: State<Views>,
-    pub busy: State<Option<String>>,
+    pub shared: super::Shared,
     pub text: State<String>,
-    pub adding: State<bool>,
+    pub choosing: State<bool>,
     pub add_problem: State<Option<Problem>>,
-    pub error: State<Option<(Problem, bool)>>,
+    pub add_details: State<bool>,
     pub anchor: State<Option<crate::view::kit::Bounds>>,
     pub details: State<bool>,
-    pub add_details: State<bool>,
     pub grid: State<f32>,
 }
 
 impl Ctl {
     fn alive(self) -> bool {
-        self.look.try_peek().is_some()
+        self.choosing.try_peek().is_some()
+    }
+
+    pub fn desk(self) -> Desk {
+        Desk { store: self.store, shared: self.shared }
     }
 
     pub fn account(self) -> Option<Account> {
-        let id = (*self.chosen.peek())?;
-        self.store.model.peek().account(id).cloned()
+        let id = (*self.shared.chosen.peek())?;
+        self.desk().account(id)
     }
 
-    fn still(self, id: Uuid) -> bool {
-        self.alive() && *self.chosen.peek() == Some(id)
+    /// What the chosen account wears, with the changes still in line; redraws the page when it changes.
+    pub fn look(self) -> Option<Look> {
+        drop(self.shared.lanes.read());
+        self.desk().shown((*self.shared.chosen.peek())?)
+    }
+
+    /// The work of the chosen account.
+    pub fn lane(self) -> Lane {
+        drop(self.shared.lanes.read());
+        (*self.shared.chosen.peek()).map(|id| self.desk().lane(id)).unwrap_or_default()
+    }
+
+    pub fn shelf(self) -> Vec<Hung> {
+        self.shared.shelf.read().clone()
+    }
+
+    pub fn views(self) -> Views {
+        self.shared.views.read().clone()
+    }
+
+    pub fn adds(self) -> Vec<(u64, String)> {
+        self.shared.adds.read().clone()
     }
 
     pub fn start(mut self) {
         let m = self.store.model.peek();
-        let known = self.chosen.peek().filter(|id| m.account(*id).is_some());
+        let known = self.shared.chosen.peek().filter(|id| m.account(*id).is_some());
         let pick = known
             .or_else(|| m.accounts.iter().find(|a| a.kind == AccountKind::Microsoft).map(|a| a.id))
             .or_else(|| crate::app::reduce::active_account(&m))
             .or_else(|| m.accounts.first().map(|a| a.id));
         drop(m);
-        self.chosen.set(pick);
-        self.reload_shelf();
-        self.load(false);
+        self.shared.chosen.set(pick);
+        let desk = self.desk();
+        desk.redraw();
+        desk.reload_shelf();
+        if let Some(id) = pick {
+            desk.open(id, false);
+        }
     }
 
     pub fn choose(mut self, id: Uuid) {
-        if *self.chosen.peek() == Some(id) {
+        if *self.shared.chosen.peek() == Some(id) {
             return;
         }
-        self.chosen.set(Some(id));
-        self.error.set(None);
-        self.phase.set(Phase::Idle);
-        self.load(false);
+        self.shared.chosen.set(Some(id));
+        let desk = self.desk();
+        desk.redraw();
+        desk.open(id, false);
     }
 
-    pub fn reload_shelf(self) {
-        let accounts: Vec<Account> = self.store.model.peek().accounts.iter().filter(|a| a.kind == AccountKind::Microsoft).cloned().collect();
-        let Some(rx) = off_thread("wardrobe-shelf", move || {
-            accounts.iter().for_each(wardrobe::adopt_recent);
-            wardrobe::list().into_iter().filter_map(|s| {
-                let image = wardrobe::image(&s)?;
-                let (front, _) = change::front_and_back(&image, s.model);
-                Some((s, front))
-            }).collect::<Vec<_>>()
-        }) else {
-            return;
-        };
-        spawn_in_window(async move {
-            let Ok(found) = rx.recv().await else { return };
-            if !self.alive() {
-                return;
-            }
-            let mut shelf = self.shelf;
-            shelf.set(found.into_iter().filter_map(|(skin, front)| Some(Hung { skin, thumb: handle(&front)? })).collect());
-        });
-    }
-
-    fn set_look(mut self, d: Data) {
-        let capes = d.capes.into_iter().map(|(id, alias, front)| Owns { thumb: front.as_ref().and_then(handle), id, alias, front }).collect();
-        self.look.set(Some(Look { skin: d.skin, model: d.model, worn: d.worn, capes, cape: d.cape, microsoft: d.microsoft, known: d.known }));
-        self.redraw();
-    }
-
-    pub fn redraw(mut self) {
-        let views = self.look.peek().as_ref().and_then(|look| {
-            let skin = look.skin.as_ref()?;
-            let (front, mut back) = change::front_and_back(skin, look.model);
-            if let Some(cloak) = look.cape.as_deref().and_then(|id| look.capes.iter().find(|c| c.id == id)).and_then(|c| c.front.as_ref()) {
-                change::hang_cape(&mut back, cloak);
-            }
-            Some((handle(&front)?, handle(&back)?))
-        });
-        self.views.set(views);
-    }
-
-    pub fn load(mut self, force: bool) {
-        let Some(account) = self.account() else {
-            self.look.set(None);
-            self.views.set(None);
-            return;
-        };
-        let id = account.id;
-        let Some(rx) = off_thread("wardrobe-cache", move || {
-            let cached = wardrobe::cached(account.id);
-            let stale = account.kind == AccountKind::Microsoft && (force || cached.as_ref().is_none_or(|o| !o.fresh()));
-            (data(&account, cached.as_ref()), stale.then_some(account))
-        }) else {
-            return;
-        };
-        spawn_in_window(async move {
-            let Ok((shown, ask)) = rx.recv().await else { return };
-            if !self.still(id) {
-                return;
-            }
-            self.set_look(shown);
-            let Some(account) = ask else { return };
-            self.refresh(account);
-        });
-    }
-
-    fn refresh(mut self, account: Account) {
-        let id = account.id;
-        self.phase.set(Phase::Refreshing);
-        let Some(rx) = off_thread("wardrobe-refresh", move || wardrobe::refresh(&account).map(|told| (data(&account, Some(&told.outfit)), told.face))) else {
-            self.phase.set(Phase::Idle);
-            return;
-        };
-        spawn_in_window(async move {
-            let Ok(done) = rx.recv().await else { return };
-            if !self.alive() {
-                return;
-            }
-            match done {
-                Ok((fresh, face)) => {
-                    if let Some(face) = face {
-                        show_face(self.store, id, face);
-                    }
-                    if self.still(id) {
-                        self.set_look(fresh);
-                        let mut phase = self.phase;
-                        phase.set(Phase::Idle);
-                        self.reload_shelf();
-                    }
-                }
-                Err(e) if self.still(id) => {
-                    let mut phase = self.phase;
-                    phase.set(Phase::Failed(problem(&e), signs_in_again(&e)));
-                }
-                Err(_) => {}
-            }
-        });
-    }
-
-    pub fn can_wear(self) -> bool {
-        self.busy.peek().is_none() && !matches!(*self.phase.peek(), Phase::Refreshing) && self.look.peek().as_ref().is_some_and(|l| l.microsoft)
+    /// Asks Minecraft services again what the chosen account wears.
+    pub fn reload(self) {
+        if let Some(id) = *self.shared.chosen.peek() {
+            self.desk().ask(id, Op::Refresh);
+        }
     }
 
     pub fn wear_skin(self, file: &str) {
-        if !self.can_wear() {
+        let Some(account) = self.account() else { return };
+        if account.kind != AccountKind::Microsoft {
+            return self.desk().offline_hint();
+        }
+        let Some(hung) = self.shared.shelf.peek().iter().find(|h| h.skin.file == file).cloned() else { return };
+        if self.look().and_then(|l| l.worn).as_deref() == Some(file) {
             return;
         }
-        let Some(skin) = self.shelf.peek().iter().find(|h| h.skin.file == file).map(|h| h.skin.clone()) else { return };
-        let worn = self.look.peek().as_ref().and_then(|l| l.worn.clone());
-        if worn.as_deref() == Some(file) {
+        let Some(image) = Desk::picture(&hung.png) else {
+            toast::show(self.store.ui, tr("Dieses Bild lässt sich nicht lesen."), None);
             return;
-        }
-        self.wear(format!("skin:{file}"), move |account| wardrobe::wear(account, Some((&skin, skin.model)), None), true, false);
+        };
+        self.desk().ask(account.id, Op::Skin { file: hung.skin.file, png: hung.png, image, model: hung.skin.model });
     }
 
     pub fn wear_cape(self, id: Option<String>) {
-        if !self.can_wear() || self.look.peek().as_ref().is_some_and(|l| l.cape == id) {
-            return;
-        }
-        let key = format!("cape:{}", id.as_deref().unwrap_or(""));
-        self.wear(key, move |account| wardrobe::wear(account, None, Some(id.as_deref())), false, true);
-    }
-
-    fn wear(mut self, key: String, work: impl FnOnce(&Account) -> wardrobe::Changed + Send + 'static, skin_asked: bool, cape_asked: bool) {
         let Some(account) = self.account() else { return };
-        let id = account.id;
-        self.busy.set(Some(key));
-        self.error.set(None);
-        let Some(rx) = off_thread("wardrobe-wear", move || {
-            let changed = work(&account);
-            let shown = changed.told.as_ref().map(|t| data(&account, Some(&t.outfit)));
-            (changed, shown)
-        }) else {
-            self.busy.set(None);
-            self.error.set(Some((Problem::plain(tr("Die Änderung lässt sich gerade nicht senden. Versuch es noch einmal.")), false)));
-            return;
-        };
-        spawn_in_window(async move {
-            let Ok((changed, shown)) = rx.recv().await else { return };
-            if let Some(Told { face: Some(face), .. }) = &changed.told {
-                show_face(self.store, id, face.clone());
-            }
-            if !self.alive() {
-                let text = changed.error.as_ref().map_or_else(|| done_text(skin_asked, cape_asked), |e| problem(e).text);
-                toast::show(self.store.ui, text, None);
-                return;
-            }
-            let mut busy = self.busy;
-            busy.set(None);
-            if self.still(id) {
-                if let Some(shown) = shown {
-                    self.set_look(shown);
-                }
-            }
-            match changed.error {
-                Some(e) if self.still(id) => {
-                    let mut error = self.error;
-                    error.set(Some((problem(&e), signs_in_again(&e))));
-                }
-                Some(e) => {
-                    toast::show(self.store.ui, problem(&e).text, None);
-                }
-                None => {
-                    toast::show(self.store.ui, done_text(skin_asked, cape_asked), None);
-                }
-            }
-            if skin_asked {
-                self.reload_shelf();
-            }
-        });
-    }
-
-    pub fn add_typed(self) {
-        let input = self.text.peek().trim().to_owned();
-        if input.is_empty() || *self.adding.peek() {
+        if account.kind != AccountKind::Microsoft || self.look().is_some_and(|l| l.cape == id) {
             return;
         }
-        self.run_add(move || if looks_like_link(&input) { wardrobe::fetch_link(&input) } else { wardrobe::fetch_player(&input) }.map(|f| vec![f]), true);
+        self.desk().ask(account.id, Op::Cape(id));
+    }
+
+    pub fn add_typed(mut self) {
+        let input = self.text.peek().trim().to_owned();
+        if input.is_empty() {
+            return;
+        }
+        self.text.set(String::new());
+        let typed = input.clone();
+        self.run_add(input.clone(), move || if looks_like_link(&input) { wardrobe::fetch_link(&input) } else { wardrobe::fetch_player(&input) }.map(|f| vec![f]), Some(typed));
     }
 
     pub fn choose_file(mut self) {
-        if *self.adding.peek() {
+        if *self.choosing.peek() {
             return;
         }
-        self.adding.set(true);
+        self.choosing.set(true);
         spawn_in_window(async move {
             let path = if drive::on() { drive::answer("skin file").and_then(|p| p.into_iter().next()) } else { ask().await };
             if !self.alive() {
                 return;
             }
-            let mut adding = self.adding;
-            adding.set(false);
+            let mut choosing = self.choosing;
+            choosing.set(false);
             if let Some(path) = path {
                 self.add_paths(vec![path]);
             }
@@ -361,120 +183,151 @@ impl Ctl {
     }
 
     pub fn add_paths(self, paths: Vec<PathBuf>) {
-        if paths.is_empty() || *self.adding.peek() {
+        if paths.is_empty() {
             return;
         }
-        self.run_add(move || {
-            let mut found = Vec::new();
-            let mut first_error = None;
-            for path in paths {
-                match wardrobe::from_file(&path) {
-                    Ok(f) => found.push(f),
-                    Err(e) if first_error.is_none() => first_error = Some(e),
-                    Err(_) => {}
+        let label = match paths.as_slice() {
+            [one] => one.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            many => trf("%lld Dateien", &[&many.len()]),
+        };
+        self.run_add(
+            label,
+            move || {
+                let mut found = Vec::new();
+                let mut first_error = None;
+                for path in paths {
+                    match wardrobe::from_file(&path) {
+                        Ok(f) => found.push(f),
+                        Err(e) if first_error.is_none() => first_error = Some(e),
+                        Err(_) => {}
+                    }
                 }
-            }
-            match (found.is_empty(), first_error) {
-                (true, Some(e)) => Err(e),
-                _ => Ok(found),
-            }
-        }, false);
+                match (found.is_empty(), first_error) {
+                    (true, Some(e)) => Err(e),
+                    _ => Ok(found),
+                }
+            },
+            None,
+        );
     }
 
-    fn run_add(mut self, work: impl FnOnce() -> anyhow::Result<Vec<Fetched>> + Send + 'static, typed: bool) {
-        self.adding.set(true);
+    fn run_add(mut self, label: String, work: impl FnOnce() -> anyhow::Result<Vec<Fetched>> + Send + 'static, typed: Option<String>) {
+        let n = ticket();
+        let mut adds = self.shared.adds;
+        adds.write().push((n, label));
         self.add_problem.set(None);
         let Some(rx) = off_thread("wardrobe-add", move || {
-            let fetched = work()?;
-            let mut added = Vec::new();
-            for f in &fetched {
-                added.push(wardrobe::add(f)?);
+            let mut checked: Vec<(Fetched, image::RgbaImage)> = Vec::new();
+            for f in work()? {
+                let image = change::check_png(&f.png)?;
+                let (front, _) = change::front_and_back(&image, f.model);
+                checked.push((f, front));
             }
-            Ok::<_, anyhow::Error>(added)
+            Ok::<_, anyhow::Error>(checked)
         }) else {
-            self.adding.set(false);
+            adds.write().retain(|(i, _)| *i != n);
             return;
         };
         spawn_in_window(async move {
-            let Ok(done) = rx.recv().await else { return };
-            if !self.alive() {
+            let done = rx.recv().await;
+            let desk = self.desk();
+            let Ok(done) = done else {
+                adds.write().retain(|(i, _)| *i != n);
                 return;
-            }
-            let mut adding = self.adding;
-            adding.set(false);
-            match done {
-                Ok(added) => {
-                    let mut text = self.text;
-                    if typed {
-                        text.set(String::new());
+            };
+            let (arrived, error) = match done {
+                Ok(checked) => match Desk::settle(Desk::enqueue(move || store(checked))).await {
+                    Some(stored) => stored,
+                    None => (Vec::new(), None),
+                },
+                Err(e) => (Vec::new(), Some(e)),
+            };
+            adds.write().retain(|(i, _)| *i != n);
+            if !arrived.is_empty() {
+                let mut shelf = self.shared.shelf;
+                for (added, png, front) in &arrived {
+                    if added.new
+                        && !shelf.peek().iter().any(|h| h.skin.file == added.skin.file)
+                        && let Some(thumb) = handle(front)
+                    {
+                        shelf.write().insert(0, Hung { skin: added.skin.clone(), thumb, png: Arc::new(png.clone()) });
                     }
-                    self.reload_shelf();
-                    let news = added.iter().filter(|a| a.new).count();
-                    let message = match (added.as_slice(), news) {
-                        ([one], 1) => trf("„%@“ liegt jetzt in der Garderobe.", &[&one.skin.name]),
-                        ([one], _) => trf("„%@“ war schon in der Garderobe.", &[&one.skin.name]),
-                        (_, n) => trf("%lld neue Skins in der Garderobe.", &[&n]),
-                    };
-                    toast::show(self.store.ui, message, None);
                 }
-                Err(e) => {
+                desk.reload_shelf();
+                let news = arrived.iter().filter(|(a, ..)| a.new).count();
+                let message = match (arrived.as_slice(), news) {
+                    ([(one, ..)], 1) => trf("„%@“ liegt jetzt in der Garderobe.", &[&one.skin.name]),
+                    ([(one, ..)], _) => trf("„%@“ war schon in der Garderobe.", &[&one.skin.name]),
+                    (_, n) => trf("%lld neue Skins in der Garderobe.", &[&n]),
+                };
+                toast::show(self.store.ui, message, None);
+            }
+            if let Some(e) = error {
+                let found = problem(&e);
+                if self.alive() {
+                    let mut text = self.text;
+                    if let Some(typed) = typed
+                        && text.peek().is_empty()
+                    {
+                        text.set(typed);
+                    }
                     let mut add_problem = self.add_problem;
-                    add_problem.set(Some(problem(&e)));
+                    add_problem.set(Some(found));
+                } else {
+                    toast::show(self.store.ui, found.text, None);
                 }
             }
         });
     }
 
-    pub fn remove(self, file: String) {
-        let Some(skin) = self.shelf.peek().iter().find(|h| h.skin.file == file).map(|h| h.skin.clone()) else { return };
-        let gone = skin.clone();
-        let Some(rx) = off_thread("wardrobe-remove", move || {
-            let png = wardrobe::bytes(&gone).ok()?;
-            wardrobe::remove(&file).ok()?;
-            Some(png)
-        }) else {
+    /// Takes a skin out of the library; the toast puts it back where it was.
+    pub fn remove(self, file: &str) {
+        let mut shelf = self.shared.shelf;
+        let Some(at) = shelf.peek().iter().position(|h| h.skin.file == file) else { return };
+        if self.lane().holds(file) {
+            toast::show(self.store.ui, keep_text(), None);
             return;
-        };
-        spawn_in_window(async move {
-            let Ok(Some(png)) = rx.recv().await else { return };
-            if !self.alive() {
-                return;
-            }
-            self.reload_shelf();
-            let name = skin.name.clone();
-            toast::show(
-                self.store.ui,
-                trf("„%@“ aus der Garderobe entfernt.", &[&name]),
-                Some(EventHandler::new(move |_| {
-                    let restored = Fetched { png: png.clone(), model: skin.model, name: skin.name.clone(), origin: skin.origin, from: skin.from.clone() };
-                    self.library_job("wardrobe-undo", move || {
-                        let _ = wardrobe::add(&restored);
-                    });
-                })),
-            );
-        });
+        }
+        let hung = shelf.write().remove(at);
+        let desk = self.desk();
+        let (gone, name) = (hung.skin.file.clone(), hung.skin.name.clone());
+        desk.library(move || wardrobe::remove(&gone));
+        let store = self.store;
+        toast::show_kept(
+            store.ui,
+            trf("„%@“ aus der Garderobe entfernt.", &[&name]),
+            EventHandler::new(move |_| {
+                let mut shelf = shelf;
+                let back = at.min(shelf.peek().len());
+                if !shelf.peek().iter().any(|h| h.skin.file == hung.skin.file) {
+                    shelf.write().insert(back, hung.clone());
+                }
+                let (skin, png) = (hung.skin.clone(), hung.png.clone());
+                desk.library(move || wardrobe::restore(&skin, &png, at));
+            }),
+        );
     }
 
     pub fn rename(self, file: &str, name: &str) {
         let (file, name) = (file.to_owned(), name.to_owned());
-        self.library_job("wardrobe-rename", move || {
-            let _ = wardrobe::rename(&file, &name);
-        });
+        let mut shelf = self.shared.shelf;
+        if let Some(h) = shelf.write().iter_mut().find(|h| h.skin.file == file) {
+            h.skin.name.clone_from(&name);
+        }
+        self.desk().library(move || wardrobe::rename(&file, &name));
     }
 
     pub fn set_model(self, file: &str, model: Model) {
         let file = file.to_owned();
-        self.library_job("wardrobe-model", move || {
-            let _ = wardrobe::set_model(&file, model);
-        });
-    }
-
-    fn library_job(self, name: &str, job: impl FnOnce() + Send + 'static) {
-        let Some(rx) = off_thread(name, job) else { return };
-        spawn_in_window(async move {
-            if rx.recv().await.is_ok() && self.alive() {
-                self.reload_shelf();
+        let mut shelf = self.shared.shelf;
+        if let Some(h) = shelf.write().iter_mut().find(|h| h.skin.file == file) {
+            h.skin.model = model;
+            if let Some(image) = Desk::picture(&h.png)
+                && let Some(thumb) = handle(&change::front_and_back(&image, model).0)
+            {
+                h.thumb = thumb;
             }
-        });
+        }
+        self.desk().library(move || wardrobe::set_model(&file, model));
     }
 }

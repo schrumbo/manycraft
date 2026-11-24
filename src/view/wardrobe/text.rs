@@ -1,7 +1,7 @@
 use crate::core::auth::AuthError;
 use crate::core::i18n::{tr, trf};
 use crate::core::skin_change::SkinError;
-use crate::core::wardrobe::AddError;
+use crate::core::wardrobe::{AddError, Step};
 use crate::ui::forms::{self, Problem};
 
 fn skin_text(e: &SkinError) -> String {
@@ -66,5 +66,16 @@ pub fn done_text(skin: bool, cape: bool) -> String {
         (true, true) => tr("Skin und Umhang geändert."),
         (true, false) => tr("Skin geändert."),
         _ => tr("Umhang geändert."),
+    }
+}
+
+/// What the lane is doing, in a few words.
+pub fn step_text(step: Step) -> String {
+    match step {
+        Step::SignIn => tr("Anmeldung wird geprüft …"),
+        Step::Profile => tr("Profil wird geladen …"),
+        Step::Capes { done, total } => trf("Umhänge werden geladen (%lld von %lld) …", &[&(done + 1).min(total), &total]),
+        Step::Upload => tr("Wird an Minecraft gesendet …"),
+        Step::Saving => tr("Wird gesichert …"),
     }
 }
