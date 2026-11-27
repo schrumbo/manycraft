@@ -16,7 +16,7 @@ A is the default user, B is the reason the app exists, C sets the ceiling. Nothi
 - Default paths use everyday German. No "JVM", "Heap", "SOCKS5" on a default path unless the user opened that setting.
 - Attention is shown, never shouted: an account that needs work is highlighted in its tile and counted; one coalesced OS notification per incident, no modal alerts, no sound by default.
 - Every drop shows its reason. Reconnect backs off with jitter, stops on a ban, and never retries a dead login.
-- Manycraft is a manager, not a bot: it never generates movement, input or chat on its own. It sends only what the user wrote: chat and broadcasts the user types, and the user's fixed join commands, once per join.
+- Manycraft is a manager, not a bot: it never generates movement, input or chat on its own. It sends only what the user wrote: chat and broadcasts the user types, and the user's fixed join commands, once per join. Only exception: a dead headless account respawns on its own unless the user switched that off.
 - Headless batches (a protocol client without the game: no window, no picture, ~100 MB) are a supported mode, not forbidden; some servers allow them and the user decides where to use them. They obey the same manager rule: only what the user wrote.
 - Server rules are the user's business: the app ships no server list, never claims a server allows alts, and offers nothing that dodges a server's limits.
 - Account tokens never leave the OS keychain in plain text; instance folders the user did not ask to change stay untouched.
