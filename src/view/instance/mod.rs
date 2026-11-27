@@ -36,7 +36,7 @@ use uuid::Uuid;
 pub use self::icon::InstanceIcon;
 pub use self::play::{Hero, Mini, play_now};
 pub use self::title::{Tabs, Title};
-use self::inspector::Strip;
+use self::inspector::Header;
 use super::commands::{Extra, Shortcut};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
@@ -406,12 +406,9 @@ impl Component for InstancePage {
         let body = tab_body(&t, store, tab, f.clone());
         let body = rect().width(Size::fill()).height(Size::fill()).child(body);
         let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).child(body);
-        let mut page = rect().width(Size::fill()).height(Size::fill()).child(Strip { id: self.id.clone() });
+        let mut page = rect().width(Size::fill()).height(Size::fill()).child(Header { id: self.id.clone(), room });
         for n in inspector::notices(&t, store, &self.id) {
             page = page.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).child(n));
-        }
-        if room < frame::TOOLBAR_TABS {
-            page = page.child(rect().width(Size::fill()).padding((space::S, space::L, 0., space::L)).cross_align(Alignment::Center).child(Tabs));
         }
         page.child(content).content(Content::flex()).into_element()
     }

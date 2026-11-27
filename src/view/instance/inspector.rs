@@ -10,12 +10,12 @@ use crate::view::commands::Shortcut;
 use crate::view::drive::use_spot;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::badge::dot;
-use crate::view::kit::button::Button;
+use crate::view::kit::button::{Button, Look};
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::text::{caption, line};
 use crate::view::kit::{Bounds, off_ui, ring, use_theme};
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{Theme, control, font, iconsize, space};
+use crate::view::theme::{Theme, font, frame, iconsize, space};
 use crate::view::ui::{Filter, Page};
 
 
@@ -217,55 +217,82 @@ impl Component for More {
         let store = use_store();
         let mut anchor = use_state(Bounds::default);
         let (f, rename, all) = (self.facts.clone(), self.rename, self.all);
-        rect().on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e))).child(Button::icon("instance.more", Icon::More, tr("Weitere Aktionen")).plain().on_press(move |_| {
+        rect().on_sized(move |e: Event<SizedEventData>| anchor.set_if_modified(Bounds::of(&e))).child(Button::icon("instance.more", Icon::More, tr("Weitere Aktionen")).plain().tall().on_press(move |_| {
             menu::open(store.ui, Menu::under(more_items(store, &f, rename, all), *anchor.peek()));
         }))
     }
 }
 
-/// The line above the tabs: what the instance is doing, the batches it is in, news for its loader and a menu of actions.
-#[derive(PartialEq)]
-pub struct Strip {
-    pub id: String,
+/// The second line of the instance's heading: what it is doing, what it is, how long it was played and, in a wide page, the batches it is in.
+pub(super) fn info_line(t: &Theme, store: Store, f: &Facts, id: &str, wide: bool) -> Element {
+    let (color, text) = status(t, store, f, id);
+    let mut facts = Vec::new();
+    let made = super::subtitle(&f.made);
+    if !made.is_empty() {
+        facts.push(made);
+    }
+    if let Some(played) = crate::core::playtime::played_text(store.model.read().playtime.of(id, std::time::Instant::now())) {
+        facts.push(played);
+    }
+    if let Some(hint) = companion_hint(&f.made.game_version).filter(|_| wide) {
+        facts.push(hint);
+    }
+    let mut row = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::M).overflow(Overflow::Clip).child(status_line(t, color, text));
+    if !facts.is_empty() {
+        row = row.child(caption(t, facts.join(" · ")).max_lines(1));
+    }
+    if let Some(links) = batch_links(t, &f.batches).filter(|_| wide) {
+        row = row.child(links);
+    }
+    row.into_element()
 }
 
-impl Component for Strip {
+/// The header of the instance page: its heading, Play and the tools next to it, and the tabs resting on the bottom edge, in one area.
+#[derive(PartialEq)]
+pub struct Header {
+    pub id: String,
+    /// The width the page has, which decides what the heading and the tools spell out.
+    pub room: f32,
+}
+
+impl Component for Header {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
-        use_minute(store, true);
         let f = super::facts(&store.model.read(), &self.id);
         let fallback = Instance::new("", "", Loader::Vanilla);
         let news = use_loader_news(f.as_ref().map_or(&fallback, |f| &f.made));
         let Some(f) = f else { return rect().into_element() };
-        let (color, text) = status(&t, store, &f, &self.id);
-        let mut left = rect().width(Size::flex(1.)).horizontal().cross_align(Alignment::Center).spacing(space::L).child(status_row(&t, color, text));
-        if let Some(played) = crate::core::playtime::played_text(store.model.read().playtime.of(&self.id, std::time::Instant::now())) {
-            left = left.child(caption(&t, played));
-        }
-        if let Some(links) = batch_links(&t, &f.batches) {
-            left = left.child(links);
-        }
-        if let Some(hint) = companion_hint(&f.made.game_version) {
-            left = left.child(caption(&t, hint));
-        }
-        let mut strip = rect()
-            .width(Size::fill())
-            .height(Size::px(control::L + space::S * 2.))
-            .padding((0., space::L))
+        let id = self.id.clone();
+        let folder = if self.room >= frame::HEADER_WIDE { Button::new("instance.folder", tr("Ordner öffnen")).glyph(Icon::Folder) } else { Button::icon("instance.folder", Icon::Folder, tr("Ordner öffnen")).look(Look::Secondary) };
+        let tools = rect()
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
+            .child(folder.tall().on_press(move |_| actions::open_folder(store, &id)))
+            .child(super::Hero { id: self.id.clone(), room: self.room })
+            .child(More { facts: f.clone(), rename: true, all: true });
+        let top = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::M).content(Content::flex()).child(rect().width(Size::flex(1.)).child(super::Title { id: self.id.clone() })).child(tools);
+        let mut header = rect()
+            .a11y_role(AccessibilityRole::Toolbar)
+            .width(Size::fill())
+            .padding((space::M, space::L, space::S, space::L))
+            .spacing(space::M)
             .border(Border::new().fill(t.separator).width(BorderWidth { top: 0., right: 0., bottom: 1., left: 0. }).alignment(BorderAlignment::Inner))
-            .child(left)
-            .content(Content::flex());
+            .child(top);
         if let Some(newest) = news {
             let (id, to) = (f.made.id.clone(), newest.clone());
-            strip = strip
-                .child(icon(&t, Icon::Download, iconsize::S, t.accent_text))
-                .child(line(&t, trf("%@ %@ ist verfügbar.", &[&f.made.loader.name(), &newest]), font::CALLOUT, t.text1).max_lines(1))
-                .child(Button::new("instance.loader.update", tr("Aktualisieren")).plain().on_press(move |_| actions::ask_loader(store, &id, &to)));
+            header = header.child(
+                rect()
+                    .width(Size::fill())
+                    .horizontal()
+                    .cross_align(Alignment::Center)
+                    .spacing(space::S)
+                    .child(icon(&t, Icon::Download, iconsize::S, t.accent_text))
+                    .child(line(&t, trf("%@ %@ ist verfügbar.", &[&f.made.loader.name(), &newest]), font::CALLOUT, t.text1).max_lines(1))
+                    .child(Button::new("instance.loader.update", tr("Aktualisieren")).plain().on_press(move |_| actions::ask_loader(store, &id, &to))),
+            );
         }
-        strip.child(More { facts: f.clone(), rename: true, all: true }).into_element()
+        header.child(rect().width(Size::fill()).horizontal().child(super::Tabs)).into_element()
     }
 }
