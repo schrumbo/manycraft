@@ -66,7 +66,7 @@ fn remember_icon(key: IconKey, picture: Option<ImageHandle>) {
 }
 
 /// Draws one item at a time on a thread of its own and keeps every picture it made, so a menu of fifty stacks of stone
-/// draws stone once. `None` back means the game's art could not be read; that is not kept, so a later menu tries again.
+/// draws stone once. `None` back means the game's art could not be read; that is not kept, and the slot shows its name instead.
 fn painter() -> &'static async_channel::Sender<(IconKey, Reply)> {
     static PAINTER: OnceLock<async_channel::Sender<(IconKey, Reply)>> = OnceLock::new();
     PAINTER.get_or_init(|| {
@@ -320,23 +320,18 @@ impl Component for Cell {
         let mut pressed = use_state(|| false);
         let label = self.slot.as_ref().map_or_else(|| tr("Leerer Platz"), slot_label);
         let icon_key: Option<IconKey> = self.slot.as_ref().map(|s| (s.item.clone(), s.dye, s.glint));
-        let mut art = use_state(|| icon_key.as_ref().and_then(cached_icon));
+        let art = use_state(|| icon_key.as_ref().and_then(|k| cached_icon(k).map(|p| (k.clone(), p))));
         use_side_effect_with_deps(&icon_key, move |key| {
-            let Some(key) = key.clone() else {
-                art.settle(None);
-                return;
-            };
+            let Some(key) = key.clone() else { return };
             if let Some(picture) = cached_icon(&key) {
-                art.settle(Some(picture));
+                art.settle(Some((key, picture)));
                 return;
             }
-            art.settle(None);
             spawn(async move {
-                let found = paint(key.clone()).await;
-                if let Some(picture) = &found {
-                    remember_icon(key, picture.clone());
+                if let Some(picture) = paint(key.clone()).await {
+                    remember_icon(key.clone(), picture.clone());
+                    art.settle(Some((key, picture)));
                 }
-                art.settle(Some(found.flatten()));
             });
         });
         let spot = use_spot(&format!("screen.slot.{}", self.index), "slot", &label, self.live);
@@ -404,7 +399,7 @@ impl Component for Cell {
             cell = cell.border(border);
         }
         let mut inner = rect().width(Size::fill()).height(Size::fill()).padding(space::XS).spacing(space::XXS).corner_radius(t.shape.small).background(wash);
-        let shown = art.read().clone();
+        let shown = art.read().as_ref().filter(|(k, _)| Some(k) == icon_key.as_ref()).map(|(_, p)| p.clone());
         if let (Some(slot), Some(Some(picture))) = (&self.slot, &shown) {
             let face = image(picture.clone()).width(Size::px(ICON)).height(Size::px(ICON)).aspect_ratio(AspectRatio::None);
             inner = inner.center().child(face);
@@ -414,10 +409,11 @@ impl Component for Cell {
                     .padding((0., space::XXS + 1.))
                     .corner_radius(t.shape.small / 2.)
                     .background(t.surface)
+                    .layer(Layer::Relative(2))
                     .child(figure(&t, slot.count.to_string(), font::CAPTION2, t.text1).font_weight(FontWeight::SEMI_BOLD));
                 cell = cell.child(badge);
             }
-        } else if let (Some(slot), Some(None)) = (&self.slot, &shown) {
+        } else if let Some(slot) = &self.slot {
             let mut top = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::XS);
             if let Some(rgb) = slot.rgb {
                 let [_, r, g, b] = rgb.to_be_bytes();

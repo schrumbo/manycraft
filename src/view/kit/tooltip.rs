@@ -15,7 +15,8 @@ use crate::view::ui::Ui;
 
 const REST: Duration = Duration::from_millis(500);
 const NEIGHBOUR: Duration = Duration::from_millis(800);
-const LINE: f32 = 18.;
+const LINE: f32 = 17.;
+const WRAP: usize = 38;
 
 /// A tooltip on screen: its text, its styled lines when it has them, and the control it explains.
 #[derive(Clone, Debug, PartialEq)]
@@ -118,7 +119,8 @@ pub fn host(ui: Ui) -> Element {
     let width = frame::TOOLTIP.min(w - space::L * 2.);
     let x = (tip.anchor.center().0 - width / 2.).clamp(space::S, (w - width - space::S).max(space::S));
     let below = tip.anchor.y + tip.anchor.h + space::XS;
-    let tall = if tip.lines.is_empty() { 40. } else { 24. + tip.lines.len() as f32 * LINE };
+    let rows: usize = tip.lines.iter().map(|l| chat_text::plain(l).chars().count().div_ceil(WRAP).max(1)).sum();
+    let tall = if tip.lines.is_empty() { 40. } else { 24. + rows as f32 * LINE };
     let y = if below + tall > h { (tip.anchor.y - tall).max(space::S) } else { below };
     let (ink, back) = if t.dark { (t.text1, t.control) } else { (t.surface, t.text1) };
     let body = if tip.lines.is_empty() {
