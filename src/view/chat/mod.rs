@@ -5,14 +5,14 @@ mod picker;
 mod target;
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 use freya::prelude::*;
 
 use self::picker::{List, Step, face, mark, step};
 pub use self::target::Target;
-use self::target::{Choice, at_query, at_word, choices, exists, filter, keys_of, name, on_page, reached, resolve_at};
+use self::target::{Choice, at_query, at_word, choices, exists, filter, keys_of, name, on_page, placeholder, reached, resolve, resolve_at};
 use super::commands::{Command, Extra, Shortcut};
 use super::drive::use_spot;
 use super::icons::{Icon, icon};
@@ -70,6 +70,8 @@ pub struct Shared {
     pub scope: State<Option<String>>,
     /// The recipient the person picked on the page shown; `None` follows the page: its batch, else everyone.
     pub target: State<Option<Target>>,
+    /// The selection of the grid when `target` was picked; a pick holds only while the selection is still this one.
+    pub pick_sel: State<BTreeSet<String>>,
     pub draft: State<String>,
     pub history: State<Vec<String>>,
     pub recall: State<Option<usize>>,
@@ -104,6 +106,7 @@ impl Shared {
             width: State::create(winstate::load().chat_width),
             scope: State::create(None),
             target: State::create(None),
+            pick_sel: State::create(BTreeSet::new()),
             draft: State::create(String::new()),
             history: State::create(Vec::new()),
             recall: State::create(None),
@@ -125,21 +128,28 @@ impl Shared {
     }
 }
 
-/// The recipient in use: the one picked while it still exists and belongs to the page, else the batch in `scope`, else
-/// everyone. A picked one that is gone gives nobody, so a line never goes to more games than the person chose.
-fn target_of(m: &Model, shared: Shared, scope: &Option<String>) -> Option<Target> {
+/// The recipient in use: the one picked while the grid selection is the one it was picked under, else the selected games,
+/// else the batch in `scope`, else everyone; see [`resolve`].
+fn target_of(store: Store, m: &Model, scope: &Option<String>) -> Option<Target> {
     let batch = scope.as_deref().filter(|b| m.batch(b).is_some());
-    match shared.target.read().clone() {
-        Some(t) if !exists(m, &t) => None,
-        Some(t) if on_page(m, &t, batch) => Some(t),
-        _ => Some(batch.map_or(Target::All, |b| Target::Batch(b.to_owned()))),
-    }
+    let shared = store.ui.chat;
+    let selection = store.ui.selection.read();
+    let picked = shared.target.read().clone().filter(|_| *shared.pick_sel.read() == *selection);
+    resolve(m, batch, picked.as_ref(), &selection)
+}
+
+/// Makes `target` the recipient until the grid selection changes.
+pub fn aim(store: Store, target: Target) {
+    let mut shared = store.ui.chat;
+    let selection = store.ui.selection.peek().clone();
+    shared.pick_sel.set(selection);
+    shared.target.set(Some(target));
 }
 
 /// Makes `target` the recipient and gives the message field the keyboard.
 fn pick(store: Store, target: Target) {
     let mut shared = store.ui.chat;
-    shared.target.set(Some(target));
+    aim(store, target);
     shared.picker.set_if_modified(false);
     shared.sent.set(false);
     shared.rejected.set(None);
@@ -176,7 +186,7 @@ fn send(store: Store, scope: &Option<String>) {
     };
     let text = match named {
         Some((target, rest)) => {
-            shared.target.set(Some(target));
+            aim(store, target);
             rest
         }
         None => text,
@@ -192,7 +202,7 @@ fn send(store: Store, scope: &Option<String>) {
     }
     let (target, keys) = {
         let m = store.model.peek();
-        let target = target_of(&m, shared, scope);
+        let target = target_of(store, &m, scope);
         let keys = target.as_ref().map(|t| keys_of(&m, t)).unwrap_or_default();
         (target, keys)
     };
@@ -450,6 +460,13 @@ impl Component for Conversation {
             let m = store.model.peek();
             let mut left = store.ui.chat.left_at;
             left.set(newest(&m));
+        });
+        let selection = store.ui.selection.read().clone();
+        use_side_effect_with_deps(&selection, move |selection| {
+            let mut shared = store.ui.chat;
+            if shared.target.peek().is_some() && *shared.pick_sel.peek() != *selection {
+                shared.target.set(None);
+            }
         });
         use_side_effect_with_deps(&self.scope, move |scope| {
             let mut shared = store.ui.chat;
@@ -1024,7 +1041,7 @@ impl Component for SendAs {
         let focus = use_focus(a11y);
         let mut hovered = use_state(|| false);
         let m = store.model.read();
-        let target = target_of(&m, shared, &self.scope);
+        let target = target_of(store, &m, &self.scope);
         let reach = target.as_ref().map_or(0, |tg| reached(&m, tg));
         let label = target.as_ref().map_or_else(|| tr("Absender wählen"), |tg| name(&m, tg));
         let account = match &target {
@@ -1032,7 +1049,7 @@ impl Component for SendAs {
             _ => None,
         };
         let count = match &target {
-            Some(Target::All | Target::Batch(_)) => Some(reach.to_string()),
+            Some(Target::All | Target::Batch(_) | Target::Games(_)) => Some(reach.to_string()),
             Some(Target::Instance(key)) => m.games.get(key).and_then(|g| target::state(&g.phase)),
             None => None,
         };
@@ -1130,13 +1147,14 @@ impl Component for Composer {
             }
             let all = choices(&store.model.peek(), scope.as_deref());
             if let Some((target, rest)) = resolve_at(value, &all) {
-                shared.target.set(Some(target));
+                aim(store, target);
                 shared.draft.set(rest);
             }
         });
         let m = store.model.read();
-        let target = target_of(&m, shared, &self.scope);
+        let target = target_of(store, &m, &self.scope);
         let meant = target.as_ref().map_or(0, |tg| keys_of(&m, tg).len());
+        let hint_for = target.as_ref().map_or_else(|| tr("Nachricht oder /Befehl"), |tg| placeholder(&m, tg));
         let all = choices(&m, self.scope.as_deref());
         let suggest = at_query(&draft).filter(|_| shared.at_closed.read().as_deref() != Some(draft.as_str())).map(|q| (q.is_empty(), filter(&all, q)));
         let absent = match &target {
@@ -1172,7 +1190,7 @@ impl Component for Composer {
             .horizontal()
             .cross_align(Alignment::Center)
             .spacing(space::S)
-            .child(rect().width(Size::flex(1.)).on_sized(move |e: Event<SizedEventData>| shared.field_at.set_if_modified(Bounds::of(&e))).child(Field::new("chat.message", shared.draft).placeholder(tr("Nachricht oder /Befehl")).a11y(field).rows_through().on_submit(move |_| {
+            .child(rect().width(Size::flex(1.)).on_sized(move |e: Event<SizedEventData>| shared.field_at.set_if_modified(Bounds::of(&e))).child(Field::new("chat.message", shared.draft).placeholder(hint_for.clone()).a11y(field).rows_through().on_submit(move |_| {
                 if let Some(list) = submit_list.as_ref() {
                     if let Some(at) = list.len().checked_sub(1).map(|end| store.ui.chat.at_hot.peek().unwrap_or(0).min(end)) {
                         pick_at(store, list[at].target.clone());
