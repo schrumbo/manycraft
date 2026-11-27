@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
@@ -28,6 +28,7 @@ const SHOT_LARGE_WIDTH: u32 = 2560;
 const KEPT_LARGE: usize = 40;
 const MAX_SIDE: u32 = 8192;
 const MAX_DECODED: u64 = 256 << 20;
+const MAX_VECTOR: usize = 2 << 20;
 const MAX_ICON: u64 = 4 << 20;
 
 static HASHES: LazyLock<Mutex<HashMap<PathBuf, (u64, SystemTime, String)>>> = LazyLock::new(Mutex::default);
@@ -623,11 +624,58 @@ pub fn shot_file_large(url: &str) -> Result<PathBuf> {
 
 /// A picture of a project description as a file in the cache folder, at most `SHOT_WIDTH` wide.
 /// Only public web hosts are fetched. Blocking: run it off the UI thread.
-pub fn readme_picture(url: &str) -> Result<PathBuf> {
+/// Also returns how many of the file's pixels make one pixel of the page: 2 for a vector picture, drawn at twice its size so its edges stay sharp.
+pub fn readme_picture(url: &str) -> Result<(PathBuf, u32)> {
     if !public_https(url) {
         bail!("picture is not on a public https host");
     }
-    cached_picture("readme", url, SHOT_WIDTH, |url| net::get_bytes_vetted(url, public_https))
+    let folder = paths::data_dir().join("cache").join("readme");
+    let name = format!("{}-{SHOT_WIDTH}", sha1_hex(url));
+    let kinds = [("", 1), ("@2x", 2)];
+    if let Some((path, density)) = kinds.iter().map(|(tag, density)| (folder.join(format!("{name}{tag}.png")), *density)).find(|(path, _)| path.is_file()) {
+        return Ok((path, density));
+    }
+    let bytes = net::get_bytes_vetted(url, public_https)?;
+    let (png, density) = if is_vector(&bytes) { rasterize(&bytes)? } else { (shrink(&bytes, SHOT_WIDTH)?, 1) };
+    let path = folder.join(format!("{name}{}.png", kinds.iter().find(|(_, d)| *d == density).map_or("", |(tag, _)| tag)));
+    net::write_atomic(&path, &png)?;
+    Ok((path, density))
+}
+
+fn is_vector(bytes: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]);
+    image::guess_format(bytes).is_err() && head.contains("<svg")
+}
+
+fn fonts() -> Arc<resvg::usvg::fontdb::Database> {
+    static FONTS: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let mut db = resvg::usvg::fontdb::Database::new();
+            db.load_system_fonts();
+            Arc::new(db)
+        })
+        .clone()
+}
+
+/// A vector picture as a PNG at twice its size, within the width and height caps, and the density it was drawn at. It reads no file and no address: only what is inside the picture.
+fn rasterize(bytes: &[u8]) -> Result<(Vec<u8>, u32)> {
+    use resvg::tiny_skia::{Pixmap, Transform};
+    use resvg::usvg::{Options, Tree};
+    if bytes.len() > MAX_VECTOR {
+        bail!("vector picture is too large");
+    }
+    let mut options = Options::default();
+    options.fontdb = fonts();
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    let tree = Tree::from_data(bytes, &options).context("not a supported picture")?;
+    let (w, h) = (tree.size().width(), tree.size().height());
+    let (limit_w, limit_h) = ((SHOT_WIDTH * 2) as f32, MAX_SIDE as f32);
+    let density = if w * 2. <= limit_w && h * 2. <= limit_h { 2 } else { 1 };
+    let scale = (density as f32).min(limit_w / w).min(limit_h / h);
+    let mut pixmap = Pixmap::new(((w * scale).ceil() as u32).max(1), ((h * scale).ceil() as u32).max(1)).context("picture has no size")?;
+    resvg::render(&tree, Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    Ok((pixmap.encode_png().context("picture could not be encoded")?, density))
 }
 
 /// The picture of a pack: its `pack.png`, in a folder as it is, in a zip copied to the cache folder.
@@ -715,6 +763,50 @@ mod tests {
         assert!(!public_https("https://intranet/x.png"));
         assert!(!public_https("file:///etc/passwd"));
         assert!(!public_https("https://"));
+    }
+
+    const SQUARE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#ff0000"/></svg>"##;
+
+    #[test]
+    fn a_vector_picture_is_drawn_at_twice_its_size() {
+        let (png, density) = rasterize(SQUARE.as_bytes()).unwrap();
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!((img.width(), img.height(), density), (40, 20, 2));
+        assert_eq!(img.get_pixel(3, 3).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn a_huge_vector_picture_stays_inside_the_caps() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="5000" height="100000"><rect width="5000" height="100000"/></svg>"##;
+        let (png, density) = rasterize(svg.as_bytes()).unwrap();
+        let img = image::load_from_memory(&png).unwrap();
+        assert!(img.width() <= SHOT_WIDTH * 2 && img.height() <= MAX_SIDE && density == 1);
+    }
+
+    #[test]
+    fn a_vector_picture_reads_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("secret.png");
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 255, 0, 255])).save(&file).unwrap();
+        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="4" height="4"><image width="4" height="4" xlink:href="{}"/></svg>"#, file.display().to_string().replace('\\', "/"));
+        let (png, _) = rasterize(svg.as_bytes()).unwrap();
+        assert_eq!(image::load_from_memory(&png).unwrap().to_rgba8().get_pixel(1, 1).0[3], 0);
+    }
+
+    #[test]
+    fn broken_or_oversized_vectors_are_refused() {
+        assert!(rasterize(b"<svg").is_err());
+        assert!(rasterize(&vec![b' '; MAX_VECTOR + 1]).is_err());
+    }
+
+    #[test]
+    fn a_vector_picture_is_told_from_a_raster_one_by_its_content() {
+        assert!(is_vector(SQUARE.as_bytes()));
+        assert!(is_vector(b"\xEF\xBB\xBF<?xml version=\"1.0\"?>\n<!-- badge -->\n<svg width=\"1\"></svg>"));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(1, 1).write_to(&mut png, ImageFormat::Png).unwrap();
+        assert!(!is_vector(&png.into_inner()));
+        assert!(!is_vector(b"<html>not a picture</html>"));
     }
 
     #[test]

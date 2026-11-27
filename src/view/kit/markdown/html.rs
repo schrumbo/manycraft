@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use super::table::{MAX_COLUMNS, MAX_ROWS};
 
-const MAX_TAG: usize = 2048;
+const MAX_TAG: usize = 16384;
 const MAX_DEPTH: usize = 6;
 
 const SKIPPED: [&str; 7] = ["script", "style", "svg", "iframe", "video", "object", "noscript"];
@@ -141,9 +141,28 @@ fn find_close(s: &str, name: &str) -> Option<(usize, usize)> {
     Some((at, end))
 }
 
+/// `src` as one web address a Markdown picture can carry: no inline `data:` values in its query (badge services embed their logos that way and the address stays short without them), a scheme for `//host` and spaces and brackets written out.
+fn address(src: &str) -> String {
+    let src = match src.strip_prefix("//") {
+        Some(rest) => Cow::Owned(format!("https://{rest}")),
+        None => Cow::Borrowed(src),
+    };
+    let (path, query) = match src.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (&*src, None),
+    };
+    let mut out = path.to_owned();
+    let kept: Vec<&str> = query.map(|q| q.split('&').filter(|pair| !pair.split_once('=').is_some_and(|(_, v)| v.starts_with("data:"))).collect()).unwrap_or_default();
+    if !kept.is_empty() {
+        out.push('?');
+        out.push_str(&kept.join("&"));
+    }
+    out.replace(' ', "%20").replace('(', "%28").replace(')', "%29")
+}
+
 fn image(tag: &Tag) -> String {
     let alt = tag.attr("alt").unwrap_or("").trim().replace(['[', ']', '\n'], " ");
-    let Some(src) = tag.attr("src").map(str::trim).filter(|s| !s.is_empty() && !s.contains([' ', ')', '(']) && !s.starts_with("data:")) else {
+    let Some(src) = tag.attr("src").map(str::trim).filter(|s| !s.is_empty() && !s.starts_with("data:")).map(address) else {
         return alt;
     };
     let width = tag.attr("width").and_then(|w| w.trim().trim_end_matches("px").parse::<u32>().ok()).filter(|w| *w > 0);
@@ -581,6 +600,25 @@ mod tests {
     fn a_table_of_pictures_is_a_row_of_pictures() {
         let got = md(r#"<table><tr><td><img src="https://x.org/a.png"></td><td><img src="https://x.org/b.png"></td></tr></table>"#);
         assert_eq!(got, "![](https://x.org/a.png) ![](https://x.org/b.png)");
+    }
+
+    #[test]
+    fn an_inline_logo_in_a_badge_address_is_left_out() {
+        let logo = "iVBORw0KGgo".repeat(400);
+        let long = format!(r#"<a href="https://fabricmc.net"><img src="https://img.shields.io/badge/Loader-Fabric-lightyellow?logo=data:image/png;base64,{logo}"></a>"#);
+        assert_eq!(md(&long), "[![](https://img.shields.io/badge/Loader-Fabric-lightyellow)](https://fabricmc.net)");
+        let mixed = format!(r#"<img src="https://img.shields.io/discord/1?color=0098DB&logo=data:image/png;base64,{logo}&label=Discord">"#);
+        assert_eq!(md(&mixed), "![](https://img.shields.io/discord/1?color=0098DB&label=Discord)");
+    }
+
+    #[test]
+    fn spaces_and_brackets_in_a_source_are_written_out() {
+        assert_eq!(md(r#"<img src="https://x.org/a (1).png" alt="A">"#), "![A](https://x.org/a%20%281%29.png)");
+    }
+
+    #[test]
+    fn a_source_without_a_scheme_uses_https() {
+        assert_eq!(md(r#"<img src="//x.org/a.png">"#), "![](https://x.org/a.png)");
     }
 
     #[test]

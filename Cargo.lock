@@ -5079,6 +5079,7 @@ dependencies = [
  "qrcode",
  "raw-window-handle",
  "rayon",
+ "resvg 0.46.0",
  "rfd",
  "rusqlite",
  "rust-embed",
