@@ -80,7 +80,7 @@ fn run(args: &[String]) -> Result<()> {
     });
     let mut connections: Vec<(String, Connection)> = Vec::new();
     for name in names {
-        let spec = Spec { key: name.clone(), address: server.clone(), name: name.clone(), uuid: offline_uuid(&name), session: None, version: version.clone(), packs, proxy: None, conduct: Vec::new() };
+        let spec = Spec { key: name.clone(), address: server.clone(), name: name.clone(), uuid: offline_uuid(&name), session: None, account: None, version: version.clone(), packs, proxy: None, conduct: Vec::new() };
         connections.push((name, start(spec, tx.clone())?));
         std::thread::sleep(stagger);
     }

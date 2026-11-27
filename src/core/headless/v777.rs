@@ -109,6 +109,7 @@ pub mod play {
         pub const SET_PLAYER_TEAM: i32 = 111;
         pub const BOSS_EVENT: i32 = 9;
         pub const SET_TITLES_ANIMATION: i32 = 117;
+        pub const COMMANDS: i32 = 16;
     }
     pub mod serverbound {
         pub const ACCEPT_TELEPORTATION: i32 = 0;
@@ -127,6 +128,8 @@ pub mod play {
         pub const CONTAINER_CLOSE: i32 = 19;
         pub const SET_CARRIED_ITEM: i32 = 54;
         pub const USE_ITEM: i32 = 67;
+        pub const CHAT_SESSION_UPDATE: i32 = 10;
+        pub const CHAT_COMMAND: i32 = 7;
     }
 }
 
@@ -5844,6 +5847,72 @@ pub static MENUS: &[&str] = &[
     "smoker",
     "cartography_table",
     "stonecutter",
+];
+
+/// Command argument types by protocol id.
+pub static ARGUMENTS: &[&str] = &[
+    "brigadier:bool",
+    "brigadier:float",
+    "brigadier:double",
+    "brigadier:integer",
+    "brigadier:long",
+    "brigadier:string",
+    "minecraft:entity",
+    "minecraft:game_profile",
+    "minecraft:block_pos",
+    "minecraft:column_pos",
+    "minecraft:vec3",
+    "minecraft:vec2",
+    "minecraft:block_state",
+    "minecraft:block_predicate",
+    "minecraft:item_stack",
+    "minecraft:item_predicate",
+    "minecraft:team_color",
+    "minecraft:hex_color",
+    "minecraft:component",
+    "minecraft:style",
+    "minecraft:message",
+    "minecraft:nbt_compound_tag",
+    "minecraft:nbt_tag",
+    "minecraft:nbt_path",
+    "minecraft:objective",
+    "minecraft:objective_criteria",
+    "minecraft:operation",
+    "minecraft:particle",
+    "minecraft:angle",
+    "minecraft:rotation",
+    "minecraft:scoreboard_slot",
+    "minecraft:score_holder",
+    "minecraft:swizzle",
+    "minecraft:team",
+    "minecraft:item_slot",
+    "minecraft:item_slots",
+    "minecraft:resource_location",
+    "minecraft:function",
+    "minecraft:entity_anchor",
+    "minecraft:int_range",
+    "minecraft:float_range",
+    "minecraft:dimension",
+    "minecraft:gamemode",
+    "minecraft:time",
+    "minecraft:resource_or_tag",
+    "minecraft:resource_or_tag_key",
+    "minecraft:resource",
+    "minecraft:resource_key",
+    "minecraft:resource_selector",
+    "minecraft:template_mirror",
+    "minecraft:template_rotation",
+    "minecraft:heightmap",
+    "minecraft:loot_table",
+    "minecraft:loot_predicate",
+    "minecraft:loot_modifier",
+    "minecraft:context_float_provider",
+    "minecraft:context_int_provider",
+    "minecraft:slot_source",
+    "minecraft:dialog",
+    "minecraft:feature",
+    "minecraft:swing_animation",
+    "minecraft:uuid",
 ];
 
 /// Data component types by protocol id.

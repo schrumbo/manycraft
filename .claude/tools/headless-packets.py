@@ -28,8 +28,8 @@ PACKETS = {
         "serverbound": ["client_information", "cookie_response", "custom_payload", "finish_configuration", "keep_alive", "pong", "resource_pack", "select_known_packs", "accept_code_of_conduct"],
     },
     "play": {
-        "clientbound": ["chunk_batch_finished", "cookie_request", "disconnect", "disguised_chat", "keep_alive", "ping", "player_chat", "player_combat_kill", "player_position", "resource_pack_pop", "resource_pack_push", "respawn", "set_health", "start_configuration", "system_chat", "transfer", "open_screen", "container_set_content", "container_set_slot", "container_close", "set_cursor_item", "set_player_inventory", "set_held_slot", "map_item_data", "set_title_text", "set_subtitle_text", "set_action_bar_text", "clear_titles", "login", "level_chunk_with_light", "forget_level_chunk", "block_update", "section_blocks_update", "light_update", "add_entity", "remove_entities", "move_entity_pos", "move_entity_pos_rot", "move_entity_rot", "rotate_head", "teleport_entity", "entity_position_sync", "set_entity_data", "set_equipment", "player_info_update", "player_info_remove", "set_time", "game_event", "set_experience", "update_attributes", "update_mob_effect", "remove_mob_effect", "set_objective", "set_display_objective", "set_score", "reset_score", "set_player_team", "boss_event", "set_titles_animation"],
-        "serverbound": ["accept_teleportation", "chat_ack", "chat_command_signed", "chat", "chunk_batch_received", "client_command", "configuration_acknowledged", "cookie_response", "keep_alive", "player_loaded", "pong", "resource_pack", "container_click", "container_close", "set_carried_item", "use_item"],
+        "clientbound": ["chunk_batch_finished", "cookie_request", "disconnect", "disguised_chat", "keep_alive", "ping", "player_chat", "player_combat_kill", "player_position", "resource_pack_pop", "resource_pack_push", "respawn", "set_health", "start_configuration", "system_chat", "transfer", "open_screen", "container_set_content", "container_set_slot", "container_close", "set_cursor_item", "set_player_inventory", "set_held_slot", "map_item_data", "set_title_text", "set_subtitle_text", "set_action_bar_text", "clear_titles", "login", "level_chunk_with_light", "forget_level_chunk", "block_update", "section_blocks_update", "light_update", "add_entity", "remove_entities", "move_entity_pos", "move_entity_pos_rot", "move_entity_rot", "rotate_head", "teleport_entity", "entity_position_sync", "set_entity_data", "set_equipment", "player_info_update", "player_info_remove", "set_time", "game_event", "set_experience", "update_attributes", "update_mob_effect", "remove_mob_effect", "set_objective", "set_display_objective", "set_score", "reset_score", "set_player_team", "boss_event", "set_titles_animation", "commands"],
+        "serverbound": ["accept_teleportation", "chat_ack", "chat_command_signed", "chat", "chunk_batch_received", "client_command", "configuration_acknowledged", "cookie_response", "keep_alive", "player_loaded", "pong", "resource_pack", "container_click", "container_close", "set_carried_item", "use_item", "chat_session_update", "chat_command"],
     },
 }
 
@@ -73,6 +73,9 @@ def main():
     with tempfile.TemporaryDirectory() as work:
         subprocess.run(["java", "-DbundlerMainClass=net.minecraft.data.Main", "-jar", str(jar), "--reports", "--output", str(Path(work) / "out")], cwd=work, check=True, stdout=subprocess.DEVNULL)
         packets = json.loads((Path(work) / "out" / "reports" / "packets.json").read_text(encoding="utf-8"))
+        registries = json.loads((Path(work) / "out" / "reports" / "registries.json").read_text(encoding="utf-8"))
+        arguments = sorted((e["protocol_id"], n) for n, e in registries["minecraft:command_argument_type"]["entries"].items())
+        assert [i for i, _ in arguments] == list(range(len(arguments))), "argument type ids are not dense"
         item_report = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in (Path(work) / "out" / "reports" / "minecraft" / "components" / "item").glob("*.json")}
         inner = next((Path(work) / "versions").glob("*/*.jar"))
         with zipfile.ZipFile(inner) as z:
@@ -138,6 +141,12 @@ def main():
     lines.append("/// Menu types by protocol id.")
     lines.append("pub static MENUS: &[&str] = &[")
     for _, name in data["menu"]:
+        lines.append(f"    {rust_str(name)},")
+    lines.append("];")
+    lines.append("")
+    lines.append("/// Command argument types by protocol id.")
+    lines.append("pub static ARGUMENTS: &[&str] = &[")
+    for _, name in arguments:
         lines.append(f"    {rust_str(name)},")
     lines.append("];")
     lines.append("")
