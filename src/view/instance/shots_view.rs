@@ -10,7 +10,7 @@ use crate::view::commands::Shortcut;
 use crate::view::icons::{Icon, icon};
 use crate::view::kit::button::{Button, Look};
 use crate::view::kit::text::{figure, heading, secondary, strong};
-use crate::view::kit::zoom::{BUTTON_ZOOM, FIT, Pose, fit_scale, held, put, wheel_factor};
+use crate::view::kit::zoom::{BUTTON_ZOOM, FIT, Pose, adjust, fit_scale, held, put, wheel_factor};
 use crate::view::kit::{after, use_theme};
 use crate::view::theme::{font, iconsize, space};
 
@@ -107,8 +107,7 @@ impl Component for Viewer {
             }
             let area = *stage.peek();
             let fit = fit_scale(area, size);
-            let next = pose.peek().factor(factor, fit, area, size, (0., 0.));
-            put(pose, next);
+            adjust(pose, |p| p.factor(factor, fit, area, size, (0., 0.)));
         };
         let on_step = self.on_step.clone();
         let step = move |by: isize| {
@@ -140,8 +139,8 @@ impl Component for Viewer {
                 Key::Named(NamedKey::End) => key_step(isize::MAX / 2),
                 Key::Named(NamedKey::Escape) => key_close.call(()),
                 Key::Named(NamedKey::Delete) if self_deletes => key_delete(),
-                Key::Character(c) if sized && (c == "+" || c == "=") => put(pose, pose.peek().factor(BUTTON_ZOOM, fit, area, size, (0., 0.))),
-                Key::Character(c) if sized && c == "-" => put(pose, pose.peek().factor(1. / BUTTON_ZOOM, fit, area, size, (0., 0.))),
+                Key::Character(c) if sized && (c == "+" || c == "=") => adjust(pose, |p| p.factor(BUTTON_ZOOM, fit, area, size, (0., 0.))),
+                Key::Character(c) if sized && c == "-" => adjust(pose, |p| p.factor(1. / BUTTON_ZOOM, fit, area, size, (0., 0.))),
                 Key::Character(c) if c == "0" => put(pose, FIT),
                 Key::Character(c) if sized && c == "1" => put(pose, Pose::at_scale(1., fit, area, size, (0., 0.))),
                 _ => return,
@@ -224,7 +223,7 @@ impl Component for Viewer {
                 pressed.set(if twice { None } else { Some(Instant::now()) });
                 if twice {
                     let at = (e.element_location().x as f32 - area.0 / 2., e.element_location().y as f32 - area.1 / 2.);
-                    put(pose, pose.peek().toggled(fit, area, size, at));
+                    adjust(pose, |p| p.toggled(fit, area, size, at));
                     return;
                 }
                 let current = *pose.peek();
