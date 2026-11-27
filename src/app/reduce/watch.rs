@@ -49,7 +49,10 @@ pub(super) fn nearby(m: &mut Model, env: &Env, key: &str, players: Vec<String>, 
     seen.retain(|_, at| env.now.saturating_duration_since(*at) < STRANGER_COOLDOWN);
     let mut raised = false;
     for player in arrived {
-        raised |= seen.insert((key.to_owned(), player.to_lowercase()), env.now).is_none();
+        if let std::collections::hash_map::Entry::Vacant(slot) = seen.entry((key.to_owned(), player.to_lowercase())) {
+            slot.insert(env.now);
+            raised = true;
+        }
     }
     if raised && !alone {
         fx.alerts.push((batch, name, Alert::Nearby));
@@ -95,7 +98,10 @@ pub(super) fn respawn_due(m: &mut Model, env: &Env, key: &str, generation: u64, 
         return;
     }
     m.session.respawns.remove(key);
-    let Some(Phase::Dead { server, .. }) = m.games.get(key).filter(|g| g.connection && !g.stopping).map(|g| g.phase.clone()) else { return };
+    let Some((Phase::Dead { server, .. }, batch)) = m.games.get(key).filter(|g| g.connection && !g.stopping).map(|g| (g.phase.clone(), g.batch_id.clone())) else { return };
+    if !m.batch(&batch).is_some_and(|b| b.unattended().after_death == AfterDeath::Respawn) {
+        return;
+    }
     out.push(Effect::Send { key: key.to_owned(), message: ToMod::Respawn });
     let mut fx = Fx::default();
     note(m, env, &mut fx, key, Kind::Respawned, server, &tr("Automatisch nach dem Tod"));
@@ -225,6 +231,37 @@ mod tests {
         run(&mut m, &s, now + Duration::from_secs(70), Event::Reports(vec![near(&keys[0], &[])]));
         let fx = run(&mut m, &s, now + Duration::from_secs(700), Event::Reports(vec![near(&keys[0], &["Bob"])]));
         assert_eq!(alerts_due(&fx), 1, "after the cooldown he counts as new");
+    }
+
+    #[test]
+    fn the_cooldown_counts_from_the_alert_not_from_every_return() {
+        let (mut m, keys, s) = fleet();
+        let now = Instant::now();
+        let at = |secs| now + Duration::from_secs(secs);
+        let batch = m.batches[0].id.clone();
+        run(&mut m, &s, at(0), Event::Reports(vec![near(&keys[0], &["Bob"])]));
+        run(&mut m, &s, at(3), Event::AlertDue { batch });
+        run(&mut m, &s, at(10), Event::Reports(vec![near(&keys[0], &[])]));
+        let fx = run(&mut m, &s, at(300), Event::Reports(vec![near(&keys[0], &["Bob"])]));
+        assert_eq!(alerts_due(&fx), 0);
+        run(&mut m, &s, at(310), Event::Reports(vec![near(&keys[0], &[])]));
+        let fx = run(&mut m, &s, at(650), Event::Reports(vec![near(&keys[0], &["Bob"])]));
+        assert_eq!(alerts_due(&fx), 1, "{fx:?}");
+    }
+
+    #[test]
+    fn a_batch_switched_to_wait_during_the_delay_does_not_respawn() {
+        let (mut m, keys, s) = fleet();
+        let key = &keys[0];
+        let now = Instant::now();
+        let fx = die(&mut m, &s, key, now);
+        let generation = later(&fx).into_iter().find_map(|(_, e)| if let Event::AutoRespawnDue { generation, .. } = e { Some(*generation) } else { None }).unwrap();
+        let mut u = m.batches[0].unattended();
+        u.after_death = AfterDeath::Wait;
+        m.batches[0].set_unattended(u);
+        let fx = run(&mut m, &s, now + Duration::from_secs(2), Event::AutoRespawnDue { key: key.clone(), generation });
+        assert_eq!(sends(&fx, |m| matches!(m, ToMod::Respawn)), 0);
+        assert_eq!(history(&m, key), [Kind::Died]);
     }
 
     #[test]

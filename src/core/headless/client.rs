@@ -923,7 +923,9 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
     if Crowd::reads(id) {
         let me = link.position;
         let read = link.crowd.read(id, r, me);
-        shared.show_nearby(link);
+        if [c::ADD_ENTITY, c::REMOVE_ENTITIES, c::PLAYER_INFO_UPDATE, c::PLAYER_INFO_REMOVE].contains(&id) {
+            shared.show_nearby(link);
+        }
         read?;
         return Ok(None);
     }

@@ -316,7 +316,7 @@ impl Game {
 
     /// Whether a notification about it still holds: its phase needs the user or strangers are near it.
     pub fn alerting(&self) -> bool {
-        self.phase.needs_attention() || self.need() == Some(Need::Nearby)
+        self.phase.needs_attention() || (!self.nearby.is_empty() && self.phase.on_server())
     }
 
     /// Whether it counts as running in every count of running games: its phase does and no screen waits for the user.

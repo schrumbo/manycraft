@@ -650,7 +650,7 @@ fn bare(t: &Theme, game: &Game, m: &Model, account: Option<&Account>, face: Opti
     column = column.child(rect().opacity(if stopped { 0.5 } else { 1. }).child(head));
     if roomy && !stopped {
         let place = match (&game.phase, words::since(&game.key, m)) {
-            (Phase::Playing { server, .. }, Some(since)) if !game.stopping => format!("{} · {since}", server.strip_suffix(":25565").unwrap_or(server)),
+            (Phase::Playing { server, .. }, Some(since)) if !game.stopping && !(game.connection && !game.nearby.is_empty()) => format!("{} · {since}", server.strip_suffix(":25565").unwrap_or(server)),
             _ => words::caption(game, m),
         };
         column = column.child(line(t, place, font::CAPTION, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
