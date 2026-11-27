@@ -9,9 +9,12 @@ use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
 use super::{link, run_len, safe_link, code_span};
+use crate::core::i18n::tr;
 use crate::core::packs;
+use crate::view::icons::{Icon, icon};
+use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::{off_ui, open_external, use_theme};
-use crate::view::theme::{font, frame, space};
+use crate::view::theme::{font, frame, iconsize, space};
 
 const AT_ONCE: usize = 4;
 const KEPT: usize = 24;
@@ -164,14 +167,14 @@ async fn fetch(url: String) -> Option<Loaded> {
     let (hold, release) = gate();
     hold.send(()).await.ok()?;
     let _permit = Permit(release);
-    let (w, h, raw) = off_ui(move || {
-        let path = packs::readme_picture(&url).ok()?;
+    let (w, h, density, raw) = off_ui(move || {
+        let (path, density) = packs::readme_picture(&url).ok()?;
         let img = image::open(path).ok()?.to_rgba8();
-        Some((img.width(), img.height(), img.into_raw()))
+        Some((img.width(), img.height(), density, img.into_raw()))
     })
     .await
     .flatten()?;
-    Some(Loaded { handle: ImageHandle::from_rgba(w, h, Bytes::from(raw), AlphaType::Unpremul)?, w, h })
+    Some(Loaded { handle: ImageHandle::from_rgba(w, h, Bytes::from(raw), AlphaType::Unpremul)?, w: w / density, h: h / density })
 }
 
 #[derive(PartialEq)]
@@ -197,7 +200,11 @@ impl Component for Picture {
         });
         let body = match state.read().clone() {
             Fetch::Loading => rect().width(Size::px(PLACEHOLDER_W)).height(Size::px(line_height())).corner_radius(t.shape.small).background(t.hover).into_element(),
-            Fetch::Failed if self.pic.alt.is_empty() => rect().into_element(),
+            Fetch::Failed if self.pic.alt.is_empty() => WithTip::new(
+                Some(tr("Bild ließ sich nicht laden.")),
+                rect().width(Size::px(PLACEHOLDER_W)).height(Size::px(line_height())).center().corner_radius(t.shape.small).background(t.hover).child(icon(&t, Icon::ImageOff, iconsize::S, t.text3)),
+            )
+            .into_element(),
             Fetch::Failed => rect()
                 .height(Size::px(line_height()))
                 .max_width(Size::px(self.room))
