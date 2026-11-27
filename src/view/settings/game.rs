@@ -1,11 +1,11 @@
-//! Spiel: the launcher defaults every instance starts with where it sets nothing of its own.
+//! Spielstart: the launcher defaults every instance starts with where it sets nothing of its own.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use freya::prelude::*;
 
-use super::{Prefs, toggle, use_prefs};
+use super::{Prefs, Section, toggle, use_prefs};
 use crate::core::i18n::{tr, trf};
 use crate::core::javas::Java;
 use crate::core::instance::DEFAULT_MEMORY_MB;
@@ -43,7 +43,7 @@ fn java_title(java: &Java) -> String {
     }
 }
 
-/// The defaults group: memory, Java, window, graphics card and where the data lives.
+/// The defaults group: memory, window, graphics card and Java.
 #[derive(PartialEq)]
 pub struct GameGroup;
 
@@ -99,7 +99,7 @@ impl Component for GameGroup {
         let window = WindowLine { p, saved: game.window.map(|w| (w.width.to_string(), w.height.to_string())).unwrap_or_default() }.into_element();
         let fullscreen = toggle(p, "settings.game.fullscreen", tr("Im Vollbild starten"), tr("Gilt für Spiele, die du allein spielst."), game.fullscreen, |s, on| s.game.fullscreen = on);
 
-        let mut rows = vec![most, least, java.into_element(), window, fullscreen];
+        let mut rows = vec![most, window, fullscreen];
         if cfg!(windows) || game.gpu.is_some() {
             let segments = GPUS.iter().enumerate().map(|(n, g)| Segment { id: format!("settings.game.gpu.{n}"), label: gpu_label(*g), tip: None }).collect();
             let chosen = GPUS.iter().position(|g| *g == game.gpu).unwrap_or(0);
@@ -110,16 +110,19 @@ impl Component for GameGroup {
                     .into_element(),
             );
         }
-        let data = paths::data_dir();
-        let shown = data.display().to_string();
-        rows.push(
-            Line::new("settings.game.data.row", tr("Datenordner"))
-                .hint(shown.clone())
-                .control(Button::new("settings.game.data.open", tr("Ordner öffnen")).on_press(move |_| open_external("open folder", shown.clone())))
-                .into_element(),
-        );
-        titled(&t, Some(tr("Spiel")), Some(tr("Gilt für Instanzen ohne eigene Einstellung")), rows, None)
+        rows.push(java.into_element());
+        rows.push(least);
+        titled(&t, Some(Section::Start.title()), Some(tr("Gilt für Instanzen ohne eigene Einstellung")), rows, None)
     }
+}
+
+/// The row that shows where the data lives and opens the folder.
+pub(super) fn data_row() -> Element {
+    let shown = paths::data_dir().display().to_string();
+    Line::new("settings.game.data.row", tr("Datenordner"))
+        .hint(shown.clone())
+        .control(Button::new("settings.game.data.open", tr("Ordner öffnen")).on_press(move |_| open_external("open folder", shown.clone())))
+        .into_element()
 }
 
 /// Which of the two memory lines.
@@ -195,8 +198,8 @@ impl Component for MemoryLine {
             Limit::Least => save_min,
         });
         let (id, label, hint) = match self.limit {
-            Limit::Most => ("settings.game.memory", tr("Maximaler Arbeitsspeicher"), trf("Mehr braucht ein Spiel nie. Dieser Computer hat %@.", &[&forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))])),
-            Limit::Least => ("settings.game.memory_min", tr("Minimaler Arbeitsspeicher"), tr("Womit ein Spiel startet. Leer lassen: Java entscheidet.")),
+            Limit::Most => ("settings.game.memory", tr("Arbeitsspeicher"), trf("Mehr braucht ein Spiel nie. Dieser Computer hat %@.", &[&forms::memory_label(u32::try_from(total).unwrap_or(u32::MAX))])),
+            Limit::Least => ("settings.game.memory_min", tr("Arbeitsspeicher beim Start"), tr("Womit ein Spiel startet. Leer lassen: Java entscheidet.")),
         };
         let field = Memory::new(id, label.clone(), text);
         let field = match self.limit {

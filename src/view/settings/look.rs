@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use freya::prelude::*;
 
-use super::{Prefs, use_prefs};
+use super::{Prefs, RATES, Section, use_prefs};
 use crate::core::i18n::{self, tr, trf};
 use crate::core::settings::Appearance;
 use crate::core::themes::{self, Library, Origin, Token};
@@ -74,7 +74,7 @@ fn set_language(p: Prefs, mut theme: State<Rc<Theme>>, code: Option<&'static str
     theme.set(Rc::new(same));
 }
 
-/// Language, light or dark, and the theme, whose gallery opens over the page.
+/// Language, light or dark, the theme, whose gallery opens over the page, and how often the tiles refresh.
 #[derive(PartialEq)]
 pub struct LookGroup;
 
@@ -119,7 +119,17 @@ impl Component for LookGroup {
         {
             pick = pick.hint(if dark { trf("%@ gibt es nur hell.", &[&label(c)]) } else { trf("%@ gibt es nur dunkel.", &[&label(c)]) });
         }
-        let mut rows = vec![language, mode, pick.into_element()];
+        let rate = RATES.iter().position(|r| *r == s.preview_rate).unwrap_or(1);
+        let rates = vec![
+            Segment { id: "settings.rate.saving".into(), label: tr("Sparsam"), tip: None },
+            Segment { id: "settings.rate.normal".into(), label: tr("Normal"), tip: None },
+            Segment { id: "settings.rate.smooth".into(), label: tr("Flüssig"), tip: None },
+        ];
+        let refresh = Line::new("settings.rate.row", tr("Kacheln aktualisieren"))
+            .hint(tr("Wie oft sich die Kacheln erneuern. Flüssig kostet die Spiele mehr Rechenzeit, Sparsam weniger."))
+            .control(Segmented::new(tr("Kacheln aktualisieren"), rates, rate).on_choose(move |i| p.change(|s| s.preview_rate = RATES[i.min(2)])))
+            .into_element();
+        let mut rows = vec![language, mode, pick.into_element(), refresh];
         if cfg!(target_os = "linux") {
             rows.push(super::toggle(p, "settings.system_frame", tr("Fensterrahmen vom System"), tr("Zeigt die Titelleiste und die Fensterknöpfe deines Desktops."), s.system_frame, |s, on| {
                 s.system_frame = on;
@@ -140,7 +150,7 @@ impl Component for LookGroup {
         use_focus_return(shown);
         rect()
             .width(Size::fill())
-            .child(group(&t, Some(tr("Allgemein")), rows, None))
+            .child(group(&t, Some(Section::Look.title()), rows, None))
             .maybe_child(shown.then(|| Gallery { library, chosen, dark, appearance, anchor: *anchor.read(), on_close: EventHandler::new(move |_| open.set(false)) }))
             .into_element()
     }

@@ -2423,5 +2423,13 @@
   "Beende sie vorher, wenn du das nicht willst.": "Quit them first if you don't want that.",
   "Geschützte Spiele verlieren ihre Anmeldung": "Protected games lose their login",
   "Trotzdem neu starten": "Restart Anyway",
-  "Ein Spiel dieser Instanz läuft. Was du umstellst, gilt ab seinem nächsten Start.": "A game of this instance is running. What you change applies from its next start."
+  "Ein Spiel dieser Instanz läuft. Was du umstellst, gilt ab seinem nächsten Start.": "A game of this instance is running. What you change applies from its next start.",
+  "Spielstart": "Game start",
+  "Dauerbetrieb": "Always on",
+  "Meldungen": "Alerts",
+  "Updates und Daten": "Updates and data",
+  "Kacheln aktualisieren": "Tile refresh",
+  "Auf diesem Computer": "On this computer",
+  "Arbeitsspeicher beim Start": "Memory at start",
+  "Schickt Discord, Telegram oder ntfy eine Nachricht, gesammelt pro Batch. Unabhängig vom Schalter „Auf diesem Computer“.": "Sends a message through Discord, Telegram or ntfy, grouped per batch. Works whether or not “On this computer” is on."
 }
