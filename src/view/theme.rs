@@ -65,7 +65,8 @@ pub mod frame {
     pub const SEARCH_NARROW: f32 = 160.;
     /// The content width below which the toolbar drops the tile size control, left to the palette and shortcuts.
     pub const TOOLBAR_FULL: f32 = 780.;
-    pub const TOOLBAR_TABS: f32 = 1240.;
+    /// The page width from which the instance header spells out Ordner öffnen and keeps the batches and hints in its heading.
+    pub const HEADER_WIDE: f32 = 880.;
     /// The content width below which the search field narrows.
     pub const TOOLBAR_SEARCH: f32 = 540.;
     pub const BADGE: f32 = 18.;
@@ -92,8 +93,6 @@ pub mod frame {
     pub const PALETTE_CRUMB: f32 = 180.;
     /// The widest the account name on the chip beside Play gets.
     pub const CHIP_NAME: f32 = 160.;
-    /// Width kept for Play and its neighbours at the end of an instance's toolbar, so the tabs stay put when they change.
-    pub const HERO: f32 = 400.;
     pub const MENU: f32 = 220.;
     pub const MENU_ROW: f32 = 28.;
     /// Rows a long menu shows before it scrolls.

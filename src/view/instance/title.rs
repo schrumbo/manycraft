@@ -11,11 +11,11 @@ use crate::view::kit::text::{caption, line, title};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::use_theme;
 use crate::view::store::use_store;
-use crate::view::theme::{control, font, space};
+use crate::view::theme::{control, font, frame, space};
 
-const ICON: f32 = control::L;
+const ICON: f32 = control::L + space::S;
 
-/// The instance's icon and name in the toolbar with what it is under it; a click or F2 edits the name in place.
+/// The instance's icon and name in the header with its state and facts under it; a click or F2 edits the name in place.
 #[derive(PartialEq)]
 pub struct Title {
     pub id: String,
@@ -26,7 +26,11 @@ impl Component for Title {
         let t = use_theme();
         let store = use_store();
         let nav = store.ui.instance;
-        let made = store.model.read().instance(&self.id).cloned();
+        let facts = super::facts(&store.model.read(), &self.id);
+        let made = facts.as_ref().map(|f| f.made.clone());
+        super::use_minute(store, true);
+        let ui = store.ui;
+        let wide = ui.window.read().0 - ui.sidebar_room() >= frame::HEADER_WIDE;
         let spot = use_spot("instance.title", "heading", made.as_ref().map_or("", |m| m.name.as_str()), true);
         let field = use_hook(AccessibilityId::new_unique);
         let mut held = use_state(|| false);
@@ -47,18 +51,22 @@ impl Component for Title {
             return rect().child(title(&t, tr("Instanz"))).into_element();
         };
         let picture = super::InstanceIcon { id: made.id.clone(), name: made.name.clone(), picture: made.icon_path(), side: ICON };
-        let with_icon = |col: Element| rect().horizontal().cross_align(Alignment::Center).spacing(space::S).child(picture).child(col).into_element();
+        let with_icon = |col: Element| rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::M).content(Content::flex()).child(picture).child(col).into_element();
         let renaming = nav.renaming.read().as_deref() == Some(self.id.as_str());
         let error = nav.rename_error.read().clone().filter(|_| renaming);
         let below = match error {
             Some(e) => line(&t, e, font::CALLOUT, t.danger_text).max_lines(1).text_overflow(TextOverflow::Ellipsis).into_element(),
-            None => caption(&t, super::subtitle(&made)).max_lines(1).text_overflow(TextOverflow::Ellipsis).into_element(),
+            None => match &facts {
+                Some(f) => super::inspector::info_line(&t, store, f, &made.id, wide),
+                None => caption(&t, super::subtitle(&made)).into_element(),
+            },
         };
         if renaming {
             let typed = nav.rename.read().chars().count() as f32;
             let w = (typed * font::TITLE3 * control::RENAME_GLYPH + space::XL).clamp(control::RENAME_MIN, control::RENAME_MAX);
             return with_icon(rect()
-                .spacing(1.)
+                .width(Size::flex(1.))
+                .spacing(space::XXS)
                 .on_global_key_down(move |e: Event<KeyboardEventData>| {
                     if e.key == Key::Named(NamedKey::Escape) {
                         actions::end_rename(store);
@@ -108,7 +116,7 @@ impl Component for Title {
                 menu::open(store.ui, Menu::at(items, (at.global_location.x as f32, at.global_location.y as f32)));
             })
             .child(title(&t, made.name.clone()).max_lines(1).text_overflow(TextOverflow::Ellipsis));
-        with_icon(rect().spacing(1.).child(WithTip::new(Some(tr("Klicken zum Umbenennen")), name)).child(below).into_element())
+        with_icon(rect().width(Size::flex(1.)).spacing(space::XXS).child(WithTip::new(Some(tr("Klicken zum Umbenennen")), name)).child(below).into_element())
     }
 }
 

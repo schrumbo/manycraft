@@ -119,7 +119,7 @@ pub fn end_rename(store: Store) {
     renaming.set_if_modified(None);
 }
 
-fn open_folder(store: Store, id: &str) {
+pub(super) fn open_folder(store: Store, id: &str) {
     let Some(dir) = store.model.peek().instance(id).map(Instance::dir) else { return };
     spawn_in_window(async move {
         let made = dir.clone();
