@@ -352,7 +352,7 @@ static class Gui {
         var busy = named.Where(st => !waiting(st[0])).ToList();
         Console.WriteLine();
         Console.WriteLine("Inclusive (busy samples that pass through the function):");
-        foreach (var g in busy.SelectMany(st => st.Distinct()).GroupBy(s => s).OrderByDescending(g => g.Count()).Take(30))
+        foreach (var g in busy.SelectMany(st => st.Distinct()).GroupBy(s => s).OrderByDescending(g => g.Count()).Take(int.Parse(Environment.GetEnvironmentVariable("SAMPLE_TOP") ?? "30")))
             Console.WriteLine("{0,6} {1,5:F1}%  {2}", g.Count(), 100.0 * g.Count() / Math.Max(1, busy.Count), Short(g.Key));
         Console.WriteLine();
         Console.WriteLine("App code (busy samples that pass through manycraft):");
