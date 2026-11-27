@@ -325,36 +325,31 @@ impl ElementExt for ParagraphElement {
     fn measure(&self, context: LayoutContext) -> Option<(Size2D, Rc<dyn Any>)> {
         let content_area_size =
             (*context.area_size - context.torin_node.padding.into()).max(Size2D::zero());
+        let layout_width = if self.max_lines == Some(1)
+            && context.text_style_state.text_align == TextAlign::default()
+            && context.text_style_state.text_overflow.get_ellipsis().is_none()
+        {
+            f32::MAX
+        } else {
+            content_area_size.width + 1.0
+        };
         let cached_paragraph = CachedParagraph {
             text_style_state: context.text_style_state,
             spans: &self.spans,
             max_lines: self.max_lines,
             line_height: self.line_height,
-            width: content_area_size.width,
+            width: layout_width,
         };
         let paragraph = context
             .text_cache
             .utilize(context.node_id, &cached_paragraph)
             .unwrap_or_else(|| {
-                let width = if self.max_lines == Some(1)
-                    && context.text_style_state.text_align == TextAlign::default()
-                    && context
-                        .text_style_state
-                        .text_overflow
-                        .get_ellipsis()
-                        .is_none()
-                {
-                    f32::MAX
-                } else {
-                    content_area_size.width + 1.0
-                };
-
                 let paragraph = self.build_paragraph(
                     context.text_style_state,
                     context.fallback_fonts,
                     context.scale_factor,
                     context.font_collection,
-                    width,
+                    layout_width,
                     &[],
                 );
                 context
