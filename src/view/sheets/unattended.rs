@@ -3,12 +3,13 @@
 
 use freya::prelude::*;
 
-use crate::core::batch::{CONNECTION_ONLY_OFFERED, Packs, RunMode, SCREENSHOT_MINUTES, Unattended};
+use crate::core::batch::{AfterDeath, CONNECTION_ONLY_OFFERED, Packs, RunMode, SCREENSHOT_MINUTES, Unattended};
 use crate::core::companion;
 use crate::core::i18n::{tr, trf};
 use crate::view::kit::group::Line;
 use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
+use crate::view::kit::switch::Switch;
 use crate::view::theme::{Theme, frame};
 
 fn offered() -> Vec<RunMode> {
@@ -153,6 +154,23 @@ pub fn packs_line(mut state: State<Unattended>, running: bool, lock: &Option<Str
     };
     let text = if running { format!("{text} {}", tr("Gilt sofort.")) } else { text };
     Line::new("batch.packs.row", tr("Ressourcenpakete vom Server")).hint(text).control(control)
+}
+
+/// Whether a dead connection-only game respawns on its own after a short delay.
+pub fn respawn_line(state: State<Unattended>, lock: &Option<String>) -> Line {
+    let on = state.read().after_death == AfterDeath::Respawn;
+    let label = tr("Nach dem Tod automatisch wiederbeleben");
+    let toggle = move || {
+        let mut state = state;
+        let mut u = state.write();
+        u.after_death = if u.after_death == AfterDeath::Respawn { AfterDeath::Wait } else { AfterDeath::Respawn };
+    };
+    let text = if on { tr("Ein gestorbener Account steigt nach kurzer Pause wieder ein. Jeder Tod steht im Verlauf.") } else { tr("Ein gestorbener Account wartet, bis du ihn in seiner Kachel wiederbelebst.") };
+    let mut row = Line::new("batch.respawn.row", label.clone()).hint(text).control(Switch::new("batch.respawn", label, on).disabled(lock.is_some()).on_toggle(move |_| toggle()));
+    if lock.is_none() {
+        row = row.on_press(move |_| toggle());
+    }
+    row
 }
 #[cfg(test)]
 mod tests {

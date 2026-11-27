@@ -7,7 +7,7 @@ use super::super::meter::{self, Meter, Unit};
 use super::super::model::{ChatLine, Game, MOMENTS_KEPT, Model, Phase, rank};
 use super::super::phase::{self, Why};
 use super::super::session::{Alert, Frame, HeldJoin, Reveal};
-use super::{Env, fleet, go, headless, notify, redraw, said, screen, show};
+use super::{Env, fleet, go, headless, notify, redraw, said, screen, show, watch};
 use crate::core::account::AccountKind;
 use crate::core::batch::RunMode;
 use crate::core::chat_text;
@@ -80,17 +80,20 @@ pub(super) fn reports(m: &mut Model, env: &Env, reports: Vec<Report>, out: &mut 
     let mut fx = Fx::default();
     for report in reports {
         let key = report.key().map(str::to_owned);
-        let before = key.as_ref().and_then(|k| m.games.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention()));
+        let before = key.as_ref().and_then(|k| m.games.get(k)).map(|i| (rank(&i.phase), i.phase.needs_attention(), matches!(i.phase, Phase::Dead { .. })));
         let first_state = matches!(&report, Report::Mod { message: FromMod::State { .. }, .. }) && key.as_ref().is_some_and(|k| m.session.adopted.contains(k));
         let seeded = matches!(report, Report::Seed { .. }) || first_state;
         apply(m, env, report, &mut fx);
         let Some(key) = key else { continue };
         let Some(i) = m.games.get(&key) else { continue };
         let after = (rank(&i.phase), i.phase.needs_attention());
+        let died = i.connection && !seeded && matches!(i.phase, Phase::Dead { .. }) && before.is_some_and(|b| !b.2);
         if before.is_some_and(|b| b.0 != after.0) {
             m.order_seq += 1;
         }
-        if after.1 && !seeded && !i.alone() && before.is_some_and(|b| !b.1) {
+        let respawning = died && watch::died(m, env, &key, &mut fx);
+        let Some(i) = m.games.get(&key) else { continue };
+        if after.1 && !seeded && !i.alone() && !respawning && before.is_some_and(|b| !b.1) {
             fx.alerts.push((i.batch_id.clone(), i.name.clone(), Alert::of(&i.phase)));
             if let Some(what) = notify::phone_what(&i.phase) {
                 fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, what, notify::phase_reason(&i.phase), i.phase.server())));
@@ -104,7 +107,7 @@ pub(super) fn reports(m: &mut Model, env: &Env, reports: Vec<Report>, out: &mut 
     finish(m, env, fx, out);
 }
 
-fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
+pub(super) fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
     out.extend(fx.now);
     out.extend(fx.frames);
     for key in &fx.histories {
@@ -160,7 +163,7 @@ fn finish(m: &mut Model, env: &Env, fx: Fx, out: &mut Vec<Effect>) {
     }
 }
 
-fn note(m: &mut Model, env: &Env, fx: &mut Fx, key: &str, kind: Kind, server: Option<String>, reason: &str) {
+pub(super) fn note(m: &mut Model, env: &Env, fx: &mut Fx, key: &str, kind: Kind, server: Option<String>, reason: &str) {
     let at = u64::try_from(env.unix).unwrap_or(0);
     history::push(m.history.entry(key.to_owned()).or_default(), Entry::at(at, kind, server, reason));
     if !fx.histories.iter().any(|k| k == key) {
@@ -327,6 +330,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
     m.set_hint(&key, |h| *h = Default::default());
     headless::ended(m, &key);
     screen::forget(m, &key);
+    watch::forget(m, &key);
     m.session.stale.remove(&key);
     fx.now.push(Effect::ReleasePreview(key.clone()));
     if m.games.contains_key(&key)
@@ -757,6 +761,8 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
         FromMod::State { kind: StateKind::Offer, server, offer, .. } => headless::offered(m, &key, server, offer, &mut fx.now),
         FromMod::State { kind, server, reason, cause, .. } => on_state(m, env, fx, key, kind, server, reason, cause),
         message @ (FromMod::Map { .. } | FromMod::Menu { .. } | FromMod::Titles { .. }) => screen::shown(m, &key, message, &mut fx.now),
+        FromMod::Vitals { health, food } => watch::vitals(m, &key, health, food, &mut fx.now),
+        FromMod::Nearby { players } => watch::nearby(m, env, &key, players, fx),
         FromMod::Chat { from, text, runs, .. } => {
             let runs = match (chat_text::needs_runs(&runs, &text), runs.is_empty(), &from) {
                 (false, ..) => Vec::new(),

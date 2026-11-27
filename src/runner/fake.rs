@@ -209,8 +209,16 @@ impl<P: Pixels> Sim<P> {
                 self.at(after + Duration::from_millis(1600), cancel, state(key, StateKind::Playing, None));
                 self.at(after + Duration::from_secs(8), cancel, state(key, StateKind::Dead, Some("Zombie")));
             }
-            _ => self.at(after + Duration::from_millis(1600), cancel, state(key, StateKind::Playing, None)),
+            n => {
+                self.at(after + Duration::from_millis(1600), cancel, state(key, StateKind::Playing, None));
+                if n == 2 {
+                    let near = Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Nearby { players: vec!["Notch".to_owned()] } });
+                    self.at(after + Duration::from_secs(4), cancel, near);
+                }
+            }
         }
+        let vitals = Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Vitals { health: 8 + (hash(key) % 13) as u16, food: 12 + (hash(key) % 9) as u8 } });
+        self.at(after + Duration::from_millis(1700), cancel, vitals);
     }
 
     fn command(&mut self, cmd: Cmd) {
@@ -306,7 +314,7 @@ impl<P: Pixels> Sim<P> {
             }
             ToMod::Answer { accept: true, .. } => self.at(Duration::from_millis(300), None, state(key, StateKind::Playing, None)),
             ToMod::Answer { accept: false, .. } => self.at(Duration::from_millis(300), None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::State { kind: StateKind::Disconnected, server: Some(SERVER.to_owned()), reason: None, cause: Some(DisconnectCause::PackDeclined), offer: None } })),
-            ToMod::Packs { .. } | ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Hint { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers | ToMod::Click { .. } | ToMod::CloseMenu { .. } => {}
+            ToMod::Packs { .. } | ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Hint { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers | ToMod::Click { .. } | ToMod::CloseMenu { .. } | ToMod::Hotbar { .. } | ToMod::UseItem => {}
         }
     }
 

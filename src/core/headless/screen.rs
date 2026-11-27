@@ -331,6 +331,19 @@ impl Screen {
         (age < ACTION_BAR_TICKS).then(|| hud::ActionBar { text: runs(Some(words)), ticks_left: ACTION_BAR_TICKS - age, animated: false })
     }
 
+    /// Takes hotbar slot `slot` as the selected one, as the user's choice does since the server does not echo it; whether
+    /// it is a slot.
+    pub fn select(&mut self, slot: usize) -> bool {
+        if slot >= 9 {
+            return false;
+        }
+        if self.held != slot {
+            self.held = slot;
+            self.map_dirty = true;
+        }
+        true
+    }
+
     /// The stack in the player's main hand.
     pub fn held(&self) -> Option<&Stack> {
         self.hands.get(self.held)?.as_ref()

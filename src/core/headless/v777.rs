@@ -125,6 +125,8 @@ pub mod play {
         pub const RESOURCE_PACK: i32 = 50;
         pub const CONTAINER_CLICK: i32 = 18;
         pub const CONTAINER_CLOSE: i32 = 19;
+        pub const SET_CARRIED_ITEM: i32 = 54;
+        pub const USE_ITEM: i32 = 67;
     }
 }
 

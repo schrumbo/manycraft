@@ -153,6 +153,10 @@ pub enum FromMod {
     Menu { menu: Option<Menu> },
     /// The title, subtitle and action bar a connection-only account was shown.
     Titles { titles: Titles },
+    /// A connection-only account's health in half hearts and its food level, sent when either shown value changes.
+    Vitals { health: u16, food: u8 },
+    /// The players a connection-only account's server shows it near itself, by name and sorted; sent when the set changes.
+    Nearby { players: Vec<String> },
 }
 
 /// Text as a server shows it, with its colours.
@@ -255,6 +259,10 @@ pub enum ToMod {
     Click { menu: i32, slot: i16, click: Click },
     /// Closes the open menu `menu` of a connection-only account.
     CloseMenu { menu: i32 },
+    /// The user's choice of hotbar slot `slot` (0 to 8) of a connection-only account.
+    Hotbar { slot: u8 },
+    /// The user's use of the item in the main hand of a connection-only account.
+    UseItem,
 }
 
 /// A background level as the mod reads it: the level name, plus frames per second and sight for `custom`.

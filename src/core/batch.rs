@@ -115,6 +115,24 @@ impl Packs {
     }
 }
 
+/// What a connection-only account does after it died.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfterDeath {
+    /// It waits on the death screen until the user respawns it.
+    Wait,
+    /// It respawns on its own after a short delay.
+    #[default]
+    #[serde(other)]
+    Respawn,
+}
+
+impl AfterDeath {
+    fn is_respawn(&self) -> bool {
+        *self == Self::Respawn
+    }
+}
+
 /// Minutes between automatic screenshots a headless batch may choose.
 pub const SCREENSHOT_MINUTES: [u32; 5] = [1, 5, 15, 30, 60];
 
@@ -161,6 +179,7 @@ pub struct Unattended {
     pub mode: RunMode,
     pub screenshots: Option<u32>,
     pub packs: Packs,
+    pub after_death: AfterDeath,
 }
 
 /// A group of accounts that all play the same instance with the same run settings.
@@ -210,6 +229,9 @@ pub struct Batch {
     /// What the games answer when a server offers a resource pack; a value from a newer version reads as the default.
     #[serde(default, deserialize_with = "lenient_packs", skip_serializing_if = "Packs::is_ask")]
     pub packs: Packs,
+    /// What a connection-only account does after it died.
+    #[serde(default, skip_serializing_if = "AfterDeath::is_respawn")]
+    pub after_death: AfterDeath,
 }
 
 fn lenient_mode<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<RunMode, D::Error> {
@@ -267,6 +289,7 @@ impl Batch {
             conduct: Vec::new(),
             screenshots: None,
             packs: Packs::Ask,
+            after_death: AfterDeath::Respawn,
         }
     }
 
@@ -308,7 +331,7 @@ impl Batch {
 
     /// Its unattended settings.
     pub fn unattended(&self) -> Unattended {
-        Unattended { mode: self.mode, screenshots: self.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m)), packs: self.packs.for_mode(self.mode) }
+        Unattended { mode: self.mode, screenshots: self.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m)), packs: self.packs.for_mode(self.mode), after_death: self.after_death }
     }
 
     /// Takes over `u`; an interval it does not offer reads as none.
@@ -316,6 +339,7 @@ impl Batch {
         self.mode = u.mode;
         self.screenshots = u.screenshots.filter(|m| SCREENSHOT_MINUTES.contains(m));
         self.packs = u.packs.for_mode(u.mode);
+        self.after_death = u.after_death;
     }
 
     /// Whether the user accepted the code of conduct with `hash` on `server` for this batch.
@@ -795,19 +819,22 @@ mod tests {
     fn unattended_settings_round_trip_and_read_old_or_odd_files_as_off() {
         let dir = tempfile::tempdir().unwrap();
         let mut b = Batch::new("a", "i1");
-        b.set_unattended(Unattended { mode: RunMode::Hidden, screenshots: Some(15), packs: Packs::Decline });
+        b.set_unattended(Unattended { mode: RunMode::Hidden, screenshots: Some(15), packs: Packs::Decline, after_death: AfterDeath::Wait });
         save_in(dir.path(), &b).unwrap();
         assert_eq!(load_all_in(dir.path()).unwrap(), vec![b.clone()]);
-        assert_eq!(b.unattended(), Unattended { mode: RunMode::Hidden, screenshots: Some(15), packs: Packs::Decline });
+        assert_eq!(b.unattended(), Unattended { mode: RunMode::Hidden, screenshots: Some(15), packs: Packs::Decline, after_death: AfterDeath::Wait });
         let read = |extra: &str| serde_json::from_str::<Batch>(&format!(r#"{{"id":"a1","name":"A","instance_id":"i1"{extra}}}"#)).unwrap().unattended();
         assert_eq!(read(""), Unattended::default(), "a batch from before headless runs with windows and asks");
         assert_eq!(read(r#","screenshots":7,"packs":"maybe""#), Unattended::default(), "an interval it does not offer and an unknown answer read as off and ask");
-        assert_eq!(read(r#","headless":true,"screenshots":60,"packs":"accept""#), Unattended { mode: RunMode::Hidden, screenshots: Some(60), packs: Packs::Accept }, "an early build's headless reads as the hidden game");
+        assert_eq!(read(r#","headless":true,"screenshots":60,"packs":"accept""#), Unattended { mode: RunMode::Hidden, screenshots: Some(60), packs: Packs::Accept, after_death: AfterDeath::Respawn }, "an early build's headless reads as the hidden game");
+        assert_eq!(read(r#","after_death":"wait""#).after_death, AfterDeath::Wait);
+        assert_eq!(read(r#","after_death":"from_the_future""#).after_death, AfterDeath::Respawn, "an unknown value reads as the default");
+        assert_eq!(read("").after_death, AfterDeath::Respawn, "a batch from before the setting respawns its dead");
         assert_eq!(read(r#","mode":"connection""#).mode, RunMode::Connection);
         assert_eq!(read(r#","mode":"warp""#).mode, RunMode::Windows, "a mode from a newer version reads as windows");
         assert_eq!(read(r#","headless":false"#).mode, RunMode::Windows);
         let mut odd = Batch::new("b", "i1");
-        odd.set_unattended(Unattended { mode: RunMode::Windows, screenshots: Some(2), packs: Packs::Ask });
+        odd.set_unattended(Unattended { mode: RunMode::Windows, screenshots: Some(2), packs: Packs::Ask, ..Unattended::default() });
         assert_eq!(odd.screenshots, None);
         let json = serde_json::to_string(&odd).unwrap();
         assert!(!json.contains("mode") && !json.contains("conduct") && !json.contains("headless"), "defaults stay out of the file: {json}");

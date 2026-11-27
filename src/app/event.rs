@@ -154,6 +154,12 @@ pub enum Event {
     /// Reconnects these games one after another, leaving out banned ones and those without a process.
     ReconnectMany(Vec<String>),
     Respawn(String),
+    /// The delay of the automatic respawn of connection-only account `key` ran out; an older `generation` does nothing.
+    AutoRespawnDue { key: String, generation: u64 },
+    /// The user's choice of hotbar slot `slot` (0 to 8) for connection-only account `key`.
+    Hotbar { key: String, slot: u8 },
+    /// The user's use of the item in the hand of connection-only account `key`.
+    UseItem(String),
     /// The user's `click` on `slot` of the menu `menu` that connection-only account `key` has open.
     ClickSlot { key: String, menu: i32, slot: i16, click: Click },
     /// Closes the menu `menu` that connection-only account `key` has open.

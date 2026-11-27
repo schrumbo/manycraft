@@ -28,6 +28,10 @@ pub enum Kind {
     Banned,
     Crashed,
     StartFailed,
+    /// A connection-only account died.
+    Died,
+    /// A connection-only account respawned on its own.
+    Respawned,
 }
 
 /// One event with its time in seconds since 1970 and, when there is one, the reason the server or the game gave.

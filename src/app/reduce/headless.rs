@@ -279,8 +279,9 @@ mod tests {
     }
 
     #[test]
-    fn a_death_of_a_connection_only_game_is_attention_with_a_respawn_and_never_automatic() {
+    fn a_death_of_a_connection_only_game_that_waits_is_attention_with_a_respawn_and_never_automatic() {
         let (mut m, key, s) = connection_only();
+        m.batches[0].after_death = crate::core::batch::AfterDeath::Wait;
         connected(&mut m, &s, &key);
         report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
         let fx = report(&mut m, &s, state(&key, StateKind::Dead, Some("mc.example:25565"), None));
