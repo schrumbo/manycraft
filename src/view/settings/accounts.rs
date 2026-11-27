@@ -8,7 +8,7 @@ use crate::core::auth;
 use crate::core::i18n::{tr, trf};
 use crate::view::icons::Icon;
 use crate::view::kit::button::Button;
-use crate::view::kit::group::{Line, group, status};
+use crate::view::kit::group::{Line, status};
 use crate::view::kit::{off_ui, open_external, sheet, toast, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::space;
@@ -24,11 +24,11 @@ enum Outcome {
     Failed(usize),
 }
 
-/// The Accounts section of the settings page.
+/// The row that signs every account out of this computer, the last of the data and updates group.
 #[derive(PartialEq)]
-pub struct AccountsGroup;
+pub struct SignOutRow;
 
-impl Component for AccountsGroup {
+impl Component for SignOutRow {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
@@ -54,7 +54,7 @@ impl Component for AccountsGroup {
             Outcome::Failed(n) => line.hint(failed_text(n)).hint_tone(t.danger_text),
             Outcome::Idle | Outcome::Busy => line.hint(tr("Entfernt alle gespeicherten Anmeldungen von diesem Computer. Sinnvoll, wenn du einer Mod nicht mehr traust.")),
         };
-        group(&t, Some(tr("Accounts")), vec![line.into_element()], None)
+        line.into_element()
     }
 }
 

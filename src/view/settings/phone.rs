@@ -9,7 +9,7 @@ use freya::elements::image::ImageHandle;
 use freya::engine::prelude::AlphaType;
 use freya::prelude::*;
 
-use super::{toggle, use_prefs};
+use super::{Section, toggle, use_prefs};
 use crate::app::event::Event;
 use crate::core::i18n::{tr, trf};
 use crate::core::phone::{self, Secret, Service, Slot};
@@ -282,11 +282,11 @@ impl Component for Qr {
     }
 }
 
-/// The phone group: on or off, the service, its fields, a test message and what to report.
+/// The alerts group: the computer notification, then the phone with its service, fields, a test message and what to report.
 #[derive(PartialEq)]
-pub struct PhoneGroup;
+pub struct AlertsGroup;
 
-impl Component for PhoneGroup {
+impl Component for AlertsGroup {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
         let store = use_store();
@@ -337,9 +337,13 @@ impl Component for PhoneGroup {
                 typed(&watch, store, kind);
             });
         }
-        let mut rows = vec![toggle(p, "settings.phone", tr("Aufs Handy schicken"), tr("Schickt dieselben Meldungen über Discord, Telegram oder ntfy, gesammelt pro Batch."), current.enabled, |s, on| s.phone.enabled = on)];
+        let calm = tr("Meldungen kommen gesammelt und nie mit Ton.");
+        let mut rows = vec![
+            toggle(p, "settings.notify.attention", tr("Auf diesem Computer"), tr("Eine Meldung pro Batch, wenn ein Account getrennt, gesperrt oder abgestürzt ist."), s.notifications.attention, |s, on| s.notifications.attention = on),
+            toggle(p, "settings.phone", tr("Aufs Handy"), tr("Schickt Discord, Telegram oder ntfy eine Nachricht, gesammelt pro Batch. Unabhängig vom Schalter „Auf diesem Computer“."), current.enabled, |s, on| s.phone.enabled = on),
+        ];
         if !s.phone.enabled {
-            return group(&t, Some(tr("Aufs Handy")), rows, None);
+            return group(&t, Some(Section::Alerts.title()), rows, Some(calm));
         }
         let service = current.service;
         let segments = Service::ALL.iter().map(|sv| Segment { id: format!("settings.phone.{}", sv.name().to_lowercase()), label: sv.name().to_owned(), tip: None }).collect();
@@ -415,7 +419,7 @@ impl Component for PhoneGroup {
         }
         rows.push(line.into_element());
         rows.push(toggle(p, "settings.phone.back", tr("Auch wenn sie zurück sind"), tr("Meldet auch, wenn getrennte Accounts wieder auf dem Server sind."), current.reconnected, |s, on| s.phone.reconnected = on));
-        group(&t, Some(tr("Aufs Handy")), rows, Some(tr("Webhook-URL, Token und Thema liegen nur im Passwortspeicher des Systems.")))
+        group(&t, Some(Section::Alerts.title()), rows, Some(format!("{calm} {}", tr("Webhook-URL, Token und Thema liegen nur im Passwortspeicher des Systems."))))
     }
 }
 

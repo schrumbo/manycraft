@@ -9,10 +9,10 @@ use freya::prelude::*;
 
 pub(crate) use self::game::gpu_label;
 pub use self::accounts::sign_out_all;
-use self::accounts::AccountsGroup;
-use self::game::GameGroup;
+use self::accounts::SignOutRow;
+use self::game::{GameGroup, data_row};
 use self::look::LookGroup;
-use self::phone::PhoneGroup;
+use self::phone::AlertsGroup;
 use crate::app::event::Event;
 use crate::app::model::UpdateStatus;
 use crate::core::i18n::{tr, trf};
@@ -33,11 +33,41 @@ use crate::view::updates;
 
 const WIDE: f32 = 960.;
 const JUMPS: f32 = 180.;
-const SECTIONS: usize = 11;
+const SECTIONS: usize = Section::ALL.len();
 const SPY: f32 = space::XL * 2.;
 const ATTEMPTS: (i64, i64) = (1, 100);
 const WHILE_PLAYING: [WhilePlaying; 3] = [WhilePlaying::Minimize, WhilePlaying::Tray, WhilePlaying::Keep];
 const RATES: [PreviewRate; 3] = [PreviewRate::Saving, PreviewRate::Normal, PreviewRate::Smooth];
+
+/// The groups of the page in reading order; their titles are also the entries of the list beside it.
+#[derive(Clone, Copy, PartialEq)]
+enum Section {
+    Look,
+    Start,
+    Playing,
+    Always,
+    Alerts,
+    Chat,
+    Keys,
+    Updates,
+}
+
+impl Section {
+    const ALL: [Section; 8] = [Section::Look, Section::Start, Section::Playing, Section::Always, Section::Alerts, Section::Chat, Section::Keys, Section::Updates];
+
+    fn title(self) -> String {
+        match self {
+            Self::Look => tr("Darstellung"),
+            Self::Start => tr("Spielstart"),
+            Self::Playing => tr("Beim Spielen"),
+            Self::Always => tr("Dauerbetrieb"),
+            Self::Alerts => tr("Meldungen"),
+            Self::Chat => tr("Chat"),
+            Self::Keys => tr("Tastenkürzel im Spiel"),
+            Self::Updates => tr("Updates und Daten"),
+        }
+    }
+}
 
 /// Changes settings and saves them; `rev` makes the page draw the new values, since the settings are not a state.
 #[derive(Clone, Copy, PartialEq)]
@@ -126,11 +156,24 @@ fn while_playing(p: Prefs, chosen: WhilePlaying) -> Element {
         .into_element()
 }
 
-fn attempts(p: Prefs, id: &str, label: String, value: u32, requires: Option<&str>, apply: fn(&mut Settings, u32)) -> Element {
-    let enabled = requires.is_none();
-    let reason = requires.map(|switch| trf("Erst „%@“ einschalten.", &[&tr(switch)]));
-    let stepper = Stepper::new(id, label.clone(), i64::from(value), ATTEMPTS.0, ATTEMPTS.1).disabled(reason).on_change(move |v: i64| p.change(|s| apply(s, u32::try_from(v).unwrap_or(1))));
-    Line::new(format!("{id}.row"), label).dim(!enabled).control(stepper).into_element()
+fn attempts(p: Prefs, id: &str, label: String, value: u32, apply: fn(&mut Settings, u32)) -> Element {
+    let stepper = Stepper::new(id, label.clone(), i64::from(value), ATTEMPTS.0, ATTEMPTS.1).on_change(move |v: i64| p.change(|s| apply(s, u32::try_from(v).unwrap_or(1))));
+    Line::new(format!("{id}.row"), label).control(stepper).into_element()
+}
+
+/// The chat row that sends lines; it only works while the merged chat is on, and says so while it does not.
+fn chat_send(p: Prefs, s: &Settings) -> Element {
+    let label = tr("Nachrichten senden");
+    let (on, off) = (s.broadcast, !s.merged_chat);
+    let hint = if off { trf("Erst „%@“ einschalten.", &[&tr("Gemeinsamer Chat")]) } else { tr("Erlaubt auf der Seite Chat, eine Zeile an eine Instanz oder einen ganzen Batch zu schicken.") };
+    let mut row = Line::new("settings.chat.send.row", label.clone())
+        .hint(hint)
+        .dim(off)
+        .control(Switch::new("settings.chat.send", label, on).disabled(off).on_toggle(move |v| p.change(|s| s.broadcast = v)));
+    if !off {
+        row = row.on_press(move |_| p.change(|s| s.broadcast = !on));
+    }
+    row.into_element()
 }
 
 pub(crate) fn keycap(t: &Theme, text: String) -> Element {
@@ -174,73 +217,50 @@ impl Component for SettingsPage {
         let picked = use_state(|| None::<usize>);
         let mut width = use_state(|| f32::INFINITY);
         let s = p.read();
-        let ingame = group(
-            &t,
-            Some(tr("Im Spiel")),
-            vec![
-                while_playing(p, s.while_playing),
-                toggle(p, "settings.reopen", tr("Danach wieder öffnen"), tr("Holt Manycraft zurück, sobald das letzte Spiel endet, das du allein gespielt hast."), s.reopen_after, |s, on| s.reopen_after = on),
-                toggle(p, "settings.sleep", tr("Computer wach halten, solange Spiele laufen"), tr("Der Bildschirm darf trotzdem ausgehen."), s.prevent_sleep, |s, on| s.prevent_sleep = on),
-                toggle(p, "settings.badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |s, on| s.game_badge = on),
-            ],
-            None,
-        );
-        let connection = group(
-            &t,
-            Some(tr("Verbindung")),
-            vec![
-                toggle(p, "settings.reconnect", tr("Automatisch neu verbinden"), tr("Geht nach einem Verbindungsabbruch wieder auf den Server."), s.reconnect.enabled, |s, on| s.reconnect.enabled = on),
-                attempts(p, "settings.reconnect.attempts", tr("Versuche beim Verbinden"), s.reconnect.max_attempts, (!s.reconnect.enabled).then_some("Automatisch neu verbinden"), |s, n| s.reconnect.max_attempts = n),
-                toggle(p, "settings.restart", tr("Nach einem Absturz neu starten"), tr("Startet eine Instanz, deren Spiel unerwartet beendet wurde."), s.crash_restart.enabled, |s, on| s.crash_restart.enabled = on),
-                attempts(p, "settings.restart.attempts", tr("Versuche beim Neustart"), s.crash_restart.max_attempts, (!s.crash_restart.enabled).then_some("Nach einem Absturz neu starten"), |s, n| s.crash_restart.max_attempts = n),
-            ],
-            Some(tr("Nach den letzten Versuchen zeigt die Kachel, dass der Account dich braucht. Gesperrte Accounts verbinden sich nie von selbst neu.")),
-        );
-        let notices = group(
-            &t,
-            Some(tr("Benachrichtigungen")),
-            vec![
-                toggle(p, "settings.notify.attention", tr("Bei Problemen"), tr("Eine Meldung pro Batch, wenn ein Account getrennt, gesperrt oder abgestürzt ist."), s.notifications.attention, |s, on| s.notifications.attention = on),
-            ],
-            Some(tr("Meldungen kommen gesammelt und nie mit Ton.")),
-        );
-        let chat = group(
-            &t,
-            Some(tr("Chat")),
-            vec![
-                toggle(p, "settings.chat.merged", tr("Gemeinsamer Chat"), tr("Sammelt die Chatzeilen aller Instanzen auf der Seite Chat."), s.merged_chat, |s, on| s.merged_chat = on),
-                toggle(p, "settings.chat.send", tr("Nachrichten senden"), tr("Erlaubt auf der Seite Chat, eine Zeile an eine Instanz oder einen ganzen Batch zu schicken."), s.broadcast, |s, on| s.broadcast = on),
-            ],
-            None,
-        );
-        let hotkeys = group(
-            &t,
-            Some(tr("Tastenkürzel im Spiel")),
-            HOTKEYS
-                .iter()
-                .enumerate()
-                .map(|(i, (label, chord))| Line::new(format!("settings.hotkey.{i}"), tr(label)).control(rect().horizontal().spacing(space::XS).children(chord_keys(chord).into_iter().map(|k| keycap(&t, k)))).into_element())
-                .collect(),
-            Some(tr("Diese Kürzel gelten in jedem Spiel.")),
-        );
-        let rate = RATES.iter().position(|r| *r == s.preview_rate).unwrap_or(1);
-        let rates = vec![
-            Segment { id: "settings.rate.saving".into(), label: tr("Sparsam"), tip: None },
-            Segment { id: "settings.rate.normal".into(), label: tr("Normal"), tip: None },
-            Segment { id: "settings.rate.smooth".into(), label: tr("Flüssig"), tip: None },
-        ];
-        let advanced = group(
-            &t,
-            Some(tr("Erweitert")),
-            vec![
-                Line::new("settings.rate.row", tr("Vorschau-Rate"))
-                    .hint(tr("Wie oft sich die Kacheln erneuern. Flüssig kostet die Spiele mehr Rechenzeit, Sparsam weniger."))
-                    .control(Segmented::new(tr("Vorschau-Rate"), rates, rate).on_choose(move |i| p.change(|s| s.preview_rate = RATES[i.min(2)])))
-                    .into_element(),
-            ],
-            None,
-        );
-        let sections: [Element; SECTIONS] = [LookGroup.into_element(), GameGroup.into_element(), ingame, connection, AccountsGroup.into_element(), notices, PhoneGroup.into_element(), chat, hotkeys, UpdatesGroup.into_element(), advanced];
+        let sections: [Element; SECTIONS] = Section::ALL.map(|section| match section {
+            Section::Look => LookGroup.into_element(),
+            Section::Start => GameGroup.into_element(),
+            Section::Playing => group(
+                &t,
+                Some(section.title()),
+                vec![
+                    while_playing(p, s.while_playing),
+                    toggle(p, "settings.reopen", tr("Danach wieder öffnen"), tr("Holt Manycraft zurück, sobald das letzte Spiel endet, das du allein gespielt hast."), s.reopen_after, |s, on| s.reopen_after = on),
+                    toggle(p, "settings.badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |s, on| s.game_badge = on),
+                ],
+                None,
+            ),
+            Section::Always => {
+                let mut rows = vec![toggle(p, "settings.reconnect", tr("Automatisch neu verbinden"), tr("Geht nach einem Verbindungsabbruch wieder auf den Server."), s.reconnect.enabled, |s, on| s.reconnect.enabled = on)];
+                if s.reconnect.enabled {
+                    rows.push(attempts(p, "settings.reconnect.attempts", tr("Versuche beim Verbinden"), s.reconnect.max_attempts, |s, n| s.reconnect.max_attempts = n));
+                }
+                rows.push(toggle(p, "settings.restart", tr("Nach einem Absturz neu starten"), tr("Startet eine Instanz, deren Spiel unerwartet beendet wurde."), s.crash_restart.enabled, |s, on| s.crash_restart.enabled = on));
+                if s.crash_restart.enabled {
+                    rows.push(attempts(p, "settings.restart.attempts", tr("Versuche beim Neustart"), s.crash_restart.max_attempts, |s, n| s.crash_restart.max_attempts = n));
+                }
+                rows.push(toggle(p, "settings.sleep", tr("Computer wach halten, solange Spiele laufen"), tr("Der Bildschirm darf trotzdem ausgehen."), s.prevent_sleep, |s, on| s.prevent_sleep = on));
+                group(&t, Some(section.title()), rows, Some(tr("Nach den letzten Versuchen zeigt die Kachel, dass der Account dich braucht. Gesperrte Accounts verbinden sich nie von selbst neu.")))
+            }
+            Section::Alerts => AlertsGroup.into_element(),
+            Section::Chat => group(
+                &t,
+                Some(section.title()),
+                vec![toggle(p, "settings.chat.merged", tr("Gemeinsamer Chat"), tr("Sammelt die Chatzeilen aller Instanzen auf der Seite Chat."), s.merged_chat, |s, on| s.merged_chat = on), chat_send(p, &s)],
+                None,
+            ),
+            Section::Keys => group(
+                &t,
+                Some(section.title()),
+                HOTKEYS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (label, chord))| Line::new(format!("settings.hotkey.{i}"), tr(label)).control(rect().horizontal().spacing(space::XS).children(chord_keys(chord).into_iter().map(|k| keycap(&t, k)))).into_element())
+                    .collect(),
+                Some(tr("Diese Kürzel gelten in jedem Spiel.")),
+            ),
+            Section::Updates => UpdatesGroup.into_element(),
+        });
         let wide = *width.read() >= WIDE;
         let mut column = rect().width(Size::fill()).spacing(space::XL);
         for (i, section) in sections.into_iter().enumerate() {
@@ -260,10 +280,6 @@ fn measure(mut heights: State<[f32; SECTIONS]>, i: usize, h: f32) {
         next[i] = h;
         heights.set(next);
     }
-}
-
-fn titles() -> [String; SECTIONS] {
-    ["Allgemein", "Spiel", "Im Spiel", "Verbindung", "Accounts", "Benachrichtigungen", "Aufs Handy", "Chat", "Tastenkürzel", "Updates", "Erweitert"].map(tr)
 }
 
 /// Where section `i` starts in the scrolled page.
@@ -313,7 +329,7 @@ impl Component for Jumps {
             .width(Size::fill())
             .a11y_role(AccessibilityRole::Navigation)
             .a11y_alt(tr("Abschnitte"))
-            .children(titles().into_iter().enumerate().map(|(i, title)| Row::new(format!("settings.jump.{i}"), title).selected(i == on).on_press(move |_| jump(i)).into_element()))
+            .children(Section::ALL.into_iter().enumerate().map(|(i, section)| Row::new(format!("settings.jump.{i}"), section.title()).selected(i == on).on_press(move |_| jump(i)).into_element()))
             .into_element()
     }
 }
@@ -372,7 +388,9 @@ fn updates_group(t: &Theme, store: Store, p: Prefs, s: &Settings) -> Element {
                 .into_element(),
         );
     }
-    group(t, Some(tr("Updates")), rows, updates::trouble_line(&u))
+    rows.push(data_row());
+    rows.push(SignOutRow.into_element());
+    group(t, Some(Section::Updates.title()), rows, updates::trouble_line(&u))
 }
 
 #[cfg(test)]
