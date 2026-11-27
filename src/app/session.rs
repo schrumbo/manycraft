@@ -83,6 +83,8 @@ pub struct Line {
     pub id: u64,
     pub text: String,
     pub ticket: u64,
+    /// How often the game refused the line while it was on a server though it was on a server.
+    pub tries: u8,
 }
 
 /// Chat lines that wait for their account to get on a server, and those handed to an account that did not write them yet.

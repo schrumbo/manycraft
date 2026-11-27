@@ -186,6 +186,8 @@ pub enum Event {
     Say { keys: Vec<String>, text: String },
     /// The wait of line `id` at `key` ran out, unless the hold `ticket` was replaced since.
     HoldExpired { key: String, id: u64, ticket: u64 },
+    /// A line a game refused while it was on a server goes to that game again.
+    ReleaseDue { key: String },
     /// Gives the accounts `ids` the colour `color`.
     Recolor { ids: Vec<Uuid>, color: u8 },
     /// The tiles on screen changed.

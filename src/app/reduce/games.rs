@@ -323,6 +323,7 @@ fn on_exit(m: &mut Model, env: &Env, fx: &mut Fx, key: String, code: Option<i32>
     s.unplaced.remove(&key);
     s.joined.remove(&key);
     s.held_joins.remove(&key);
+    s.join_pending.remove(&key);
     s.woken.remove(&key);
     s.adopted.remove(&key);
     let unknown = s.foreign.remove(&key) && code.is_none();

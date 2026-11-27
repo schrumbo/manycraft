@@ -376,6 +376,7 @@ pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>)
         s.crash_restarts.remove(key);
         s.joined.remove(key);
         s.held_joins.remove(key);
+        s.join_pending.remove(key);
         s.phone.forget(key);
         let has_pid = s.pids.contains_key(key);
         let Some(i) = m.games.get_mut(key) else { continue };

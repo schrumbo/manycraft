@@ -198,6 +198,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             }
         }
         Event::Say { keys, text } => said::say(model, &keys, text, &mut out),
+        Event::ReleaseDue { key } => said::retry(model, &key, &mut out),
         Event::HoldExpired { key, id, ticket } => said::expire(model, &key, id, ticket, &mut out),
         Event::Recolor { ids, color } => {
             for account in model.accounts.iter_mut().filter(|account| ids.contains(&account.id)) {

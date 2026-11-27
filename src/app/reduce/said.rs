@@ -9,6 +9,12 @@ use super::super::model::{Delivery, Game, Model, Said, SaidRow};
 use super::super::session::Line;
 use crate::core::ipc::{ChatOutcome, ChatRefusal, ToMod};
 
+/// How often a game that says it is on a server may refuse one line before it is given up.
+const RETRIES: u8 = 3;
+
+/// How long a refused line waits before its game gets it again.
+const RETRY: Duration = Duration::from_secs(2);
+
 /// How long a line waits for its account to get on a server before it is given up.
 const HOLD: Duration = Duration::from_secs(120);
 
@@ -35,13 +41,14 @@ fn hand(m: &mut Model, key: &str, line: Line, out: &mut Vec<Effect>) {
     m.session.outbox.handed.entry(key.to_owned()).or_default().push(line);
 }
 
-fn hold(m: &mut Model, key: &str, id: u64, text: String, out: &mut Vec<Effect>) {
+fn hold(m: &mut Model, key: &str, mut line: Line, out: &mut Vec<Effect>) {
     let outbox = &mut m.session.outbox;
     outbox.tickets += 1;
-    let ticket = outbox.tickets;
+    line.ticket = outbox.tickets;
+    let (id, ticket) = (line.id, line.ticket);
     let queue = outbox.held.entry(key.to_owned()).or_default();
     let at = queue.iter().position(|l| l.id > id).unwrap_or(queue.len());
-    queue.insert(at, Line { id, text, ticket });
+    queue.insert(at, line);
     out.push(Effect::After { delay: HOLD, event: Box::new(Event::HoldExpired { key: key.to_owned(), id, ticket }) });
 }
 
@@ -61,13 +68,15 @@ pub(super) fn say(m: &mut Model, keys: &[String], text: String, out: &mut Vec<Ef
     for (_, key, name, route) in games {
         m.said_seq += 1;
         let id = m.said_seq;
+        let line = Line { id, text: text.clone(), ticket: 0, tries: 0 };
+        let route = if matches!(route, Route::Now) && joining(m, &key) { Route::Hold } else { route };
         let delivery = match route {
             Route::Now => {
-                hand(m, &key, Line { id, text: text.clone(), ticket: 0 }, out);
+                hand(m, &key, line, out);
                 Delivery::Waiting
             }
             Route::Hold => {
-                hold(m, &key, id, text.clone(), out);
+                hold(m, &key, line, out);
                 Delivery::Held
             }
             Route::Never => Delivery::Refused(ChatRefusal::NotRunning),
@@ -100,8 +109,14 @@ pub(super) fn outcome(m: &mut Model, key: &str, id: u64, outcome: ChatOutcome, o
         ChatOutcome::Sent => Delivery::Sent,
         ChatOutcome::Unconfirmed => Delivery::Unconfirmed,
         ChatOutcome::Refused(why @ (ChatRefusal::NotInGame | ChatRefusal::Dropped)) => match (handed, m.games.get(key).map(route)) {
-            (Some(line), Some(Route::Now | Route::Hold)) => {
-                hold(m, key, line.id, line.text, out);
+            (Some(line), Some(Route::Hold)) => {
+                hold(m, key, line, out);
+                Delivery::Held
+            }
+            (Some(mut line), Some(Route::Now)) if line.tries < RETRIES => {
+                line.tries += 1;
+                hold(m, key, line, out);
+                out.push(Effect::After { delay: RETRY, event: Box::new(Event::ReleaseDue { key: key.to_owned() }) });
                 Delivery::Held
             }
             _ => Delivery::Refused(why),
@@ -128,9 +143,19 @@ pub(super) fn moved(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
         clear(m, key);
         return;
     }
+    if g.phase.is_running() {
+        return;
+    }
     for line in m.session.outbox.handed.remove(key).unwrap_or_default() {
         mark(m, key, line.id, Delivery::Held);
-        hold(m, key, line.id, line.text, out);
+        hold(m, key, line, out);
+    }
+}
+
+/// A line a game refused while it was on a server is due again: it goes out if the game still is on one.
+pub(super) fn retry(m: &mut Model, key: &str, out: &mut Vec<Effect>) {
+    if m.games.get(key).is_some_and(|g| g.phase.can_chat()) && !joining(m, key) {
+        release(m, key, out);
     }
 }
 
@@ -258,6 +283,58 @@ mod tests {
     }
 
     #[test]
+    fn a_line_handed_to_a_game_with_a_live_process_stays_with_it_when_an_offer_comes() {
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let a = game(&mut m, "a", playing());
+        say(&mut m, &[a.clone()], "hi".into(), &mut Vec::new());
+        m.games.get_mut(&a).unwrap().phase = Phase::Connecting { server: "mc.example".into() };
+        moved(&mut m, &a, &mut Vec::new());
+        assert_eq!((m.said.as_ref().unwrap().held(), m.said.as_ref().unwrap().counts().1), (0, 1));
+        assert!(m.session.outbox.held.is_empty());
+    }
+
+    #[test]
+    fn a_line_handed_to_a_game_whose_process_ended_waits_for_its_restart() {
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let a = game(&mut m, "a", playing());
+        say(&mut m, &[a.clone()], "hi".into(), &mut Vec::new());
+        m.games.get_mut(&a).unwrap().phase = Phase::Restarting { attempt: 1, of: 3 };
+        moved(&mut m, &a, &mut Vec::new());
+        assert_eq!(m.said.as_ref().unwrap().held(), 1);
+    }
+
+    #[test]
+    fn a_line_typed_while_the_join_commands_go_out_waits_for_them() {
+        let (mut m, key) = setup(Phase::Menu, AccountKind::Offline, &["/login pw"]);
+        let s = settings();
+        report(&mut m, &s, join(&key));
+        let mut out = Vec::new();
+        say(&mut m, &[key.clone()], "/home".into(), &mut out);
+        assert!(chat_lines(&out, &key).is_empty());
+        assert_eq!(m.said.as_ref().unwrap().held(), 1);
+    }
+
+    #[test]
+    fn a_game_that_keeps_refusing_while_on_a_server_gets_the_line_a_few_times_then_it_is_given_up() {
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let a = game(&mut m, "a", playing());
+        say(&mut m, &[a.clone()], "hi".into(), &mut Vec::new());
+        let id = id_of(&m, &a);
+        for round in 0..=RETRIES {
+            let mut out = Vec::new();
+            outcome(&mut m, &a, id, ChatOutcome::Refused(ChatRefusal::NotInGame), &mut out);
+            if round < RETRIES {
+                assert!(out.iter().any(|e| matches!(e, Effect::After { event, .. } if matches!(**event, Event::ReleaseDue { .. }))));
+                let mut out = Vec::new();
+                retry(&mut m, &a, &mut out);
+                assert_eq!(chat_lines(&out, &a).len(), 1);
+            }
+        }
+        assert_eq!(m.said.as_ref().unwrap().missed().collect::<Vec<_>>(), vec![("a", ChatRefusal::NotInGame)]);
+        assert!(!m.session.outbox.has(&a));
+    }
+
+    #[test]
     fn a_line_handed_to_a_game_that_drops_waits_for_its_return() {
         let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
         let (a, s) = (game(&mut m, "a", playing()), settings());
@@ -266,6 +343,7 @@ mod tests {
         say(&mut m, &[a.clone()], "hi".into(), &mut Vec::new());
         let id = id_of(&m, &a);
         report(&mut m, &s, state(&a, StateKind::Disconnected, Some("mc.example"), Some(crate::core::ipc::DisconnectCause::ServerDown)));
+        outcome(&mut m, &a, id, ChatOutcome::Refused(ChatRefusal::Dropped), &mut Vec::new());
         assert_eq!(m.said.as_ref().unwrap().held(), 1);
         let fx = report(&mut m, &s, join(&a));
         assert_eq!(chat_lines(&fx, &a), vec![(id, "hi".to_owned())]);
@@ -277,6 +355,7 @@ mod tests {
         say(&mut m, &[a.clone()], "hi".into(), &mut Vec::new());
         let id = id_of(&m, &a);
         report(&mut m, &settings(), state(&a, StateKind::Disconnected, Some("mc.example"), Some(crate::core::ipc::DisconnectCause::ServerDown)));
+        outcome(&mut m, &a, id, ChatOutcome::Refused(ChatRefusal::Dropped), &mut Vec::new());
         (m, a, id)
     }
 
