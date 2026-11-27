@@ -179,6 +179,9 @@ impl Component for StartPage {
             }
         }
         page = page.child(QuickPlay { infos });
+        if let Some(total) = crate::core::playtime::short(store.model.read().playtime.total(Instant::now())) {
+            page = page.child(caption(&t, trf("Insgesamt %@ gespielt", &[&total])).width(Size::fill()));
+        }
         page::scrolling(at, page)
     }
 }

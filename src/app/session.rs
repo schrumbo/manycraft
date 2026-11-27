@@ -157,6 +157,10 @@ pub struct Session {
     pub usage: HashMap<String, u64>,
     /// Whether a timer to read the memory of the running games waits.
     pub usage_timer: bool,
+    /// Whether a game started or ended since the play time was last settled.
+    pub playtime_dirty: bool,
+    /// Whether a timer to write down the play time waits.
+    pub playtime_timer: bool,
     /// The preview rate each connected game should get, as last worked out.
     pub planned: HashMap<String, Shot>,
     /// The preview rate each game was last told.

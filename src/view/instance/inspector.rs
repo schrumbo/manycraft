@@ -55,7 +55,7 @@ fn status_line(t: &Theme, color: Color, text: String) -> impl IntoElement {
 }
 
 fn status_row(t: &Theme, color: Color, text: String) -> Element {
-    rect().width(Size::fill()).child(status_line(t, color, text)).into_element()
+    rect().child(status_line(t, color, text)).into_element()
 }
 
 fn batch_links(t: &Theme, batches: &[(String, String)]) -> Option<Element> {
@@ -240,6 +240,9 @@ impl Component for Strip {
         let Some(f) = f else { return rect().into_element() };
         let (color, text) = status(&t, store, &f, &self.id);
         let mut left = rect().width(Size::flex(1.)).horizontal().cross_align(Alignment::Center).spacing(space::L).child(status_row(&t, color, text));
+        if let Some(played) = crate::core::playtime::played_text(store.model.read().playtime.of(&self.id, std::time::Instant::now())) {
+            left = left.child(caption(&t, played));
+        }
         if let Some(links) = batch_links(&t, &f.batches) {
             left = left.child(links);
         }

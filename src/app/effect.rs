@@ -57,6 +57,8 @@ pub enum Effect {
     RememberConduct { batch: String, server: String, hash: String },
     /// Keeps the measured memory per game of each batch for the next run.
     SaveMeasured(HashMap<String, u32>),
+    /// Keeps the play time per instance, in seconds, for the next run; `wait` when Manycraft quits right after.
+    SavePlaytime { seen: HashMap<String, u64>, wait: bool },
     ReadPreview { key: String, path: PathBuf },
     /// The game ended: its preview file is closed so the instance folder can be moved or deleted.
     ReleasePreview(String),

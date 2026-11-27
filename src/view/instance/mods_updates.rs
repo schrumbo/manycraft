@@ -71,7 +71,7 @@ pub(super) fn marks(found: &Found) -> HashMap<String, String> {
 /// while it is fresh, and neither reports that all is current nor that it could not look.
 pub(super) fn check(ctx: &super::Ctx, quiet: bool) {
     let mut found = ctx.found;
-    if matches!(*found.peek(), Found::Checking { .. } | Found::Applying(..)) {
+    if matches!(*found.peek(), Found::Checking { quiet: false } | Found::Applying(..)) || (quiet && matches!(*found.peek(), Found::Checking { .. })) {
         return;
     }
     let Some(made) = ctx.store.model.peek().instance(&ctx.id).cloned() else { return };

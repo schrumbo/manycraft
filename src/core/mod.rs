@@ -46,6 +46,7 @@ pub mod manager_window;
 #[allow(dead_code)]
 pub mod lock;
 pub mod measured;
+pub mod playtime;
 pub mod migrate;
 pub mod modicons;
 #[allow(dead_code)]

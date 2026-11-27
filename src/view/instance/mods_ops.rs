@@ -653,7 +653,7 @@ impl Ctx {
         self.targets().is_empty().then(|| tr("Wähle zuerst Mods aus.")).or_else(|| self.locked())
     }
 
-    fn why_updates(&self) -> Option<String> {
+    pub(super) fn why_updates(&self) -> Option<String> {
         self.store.model.peek().instance(&self.id).is_some_and(|i| i.mods.is_empty()).then(|| tr("Keine Mods von Modrinth."))
     }
 

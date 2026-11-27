@@ -382,6 +382,8 @@ pub struct Model {
     pub moments: HashMap<String, Vec<Moment>>,
     /// The memory one game of each batch was last measured to hold, in MB, by batch id.
     pub measured: HashMap<String, u32>,
+    /// How long each instance was played.
+    pub playtime: crate::core::playtime::Playtime,
     /// The account chosen to play instances alone that name none, as the settings keep it.
     pub active_account: Option<Uuid>,
     /// What servers show connection-only accounts besides the world, by game key, only while they show any.

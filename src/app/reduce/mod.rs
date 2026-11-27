@@ -5,6 +5,7 @@ mod fleet;
 mod games;
 mod headless;
 mod notify;
+mod playtime;
 mod previews;
 pub mod usage;
 mod quit;
@@ -214,6 +215,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::Watch(watch) => model.session.watch = watch,
         Event::ShotsDue { generation } => previews::due(model, generation, &mut out),
         Event::UsageDue => usage::due(model, &mut out),
+        Event::PlaytimeDue => playtime::due(model, env.now, &mut out),
         Event::Usage(readings) => usage::read(model, env, readings, &mut out),
         Event::TellGames => games::tell_games(model, env, &mut out),
         Event::CloseWindow => quit::close_window(model, env.settings.tray_explained, &mut out),
@@ -239,6 +241,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
     }
     previews::replan(model, env.settings.preview_rate, &mut out);
     usage::arm(model, &mut out);
+    playtime::settle(model, env.now, &mut out);
     out
 }
 
@@ -262,6 +265,9 @@ fn go(m: &mut Model, key: &str, to: Phase, why: Why, out: &mut Vec<Effect>) -> b
     if !phase::allowed(&i.phase, &to, why) {
         out.push(Effect::Log(format!("phase: {key} stays {:?}, refused {to:?} by {why:?}", i.phase)));
         return false;
+    }
+    if playtime::counts(&i.phase) != playtime::counts(&to) {
+        m.session.playtime_dirty = true;
     }
     i.phase = to;
     if !i.phase.can_chat() {
@@ -363,7 +369,7 @@ pub(crate) mod testing {
     /// Loads the model's own data again with `adopted` games still running.
     pub fn adopt(m: &mut Model, s: &Settings, adopted: Vec<Adoption>) -> Vec<Effect> {
         let data = Ok((m.accounts.clone(), m.batches.clone(), m.instances.clone()));
-        run(m, s, Instant::now(), Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted, resume: Vec::new(), measured: HashMap::new() })))
+        run(m, s, Instant::now(), Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted, resume: Vec::new(), measured: HashMap::new(), playtime: HashMap::new() })))
     }
 }
 

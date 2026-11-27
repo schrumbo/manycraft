@@ -11,7 +11,8 @@ use crate::core::fleet::{self, Adoption};
 const START_WAITS_FOR: Duration = Duration::from_secs(10);
 
 pub(super) fn loaded(m: &mut Model, env: &Env, loaded: Loaded, out: &mut Vec<Effect>) {
-    let Loaded { data, logs, problems, recovered, keep, adopted, resume, measured } = loaded;
+    let Loaded { data, logs, problems, recovered, keep, adopted, resume, measured, playtime } = loaded;
+    m.playtime.restore(playtime);
     for (batch, mb) in measured {
         m.measured.entry(batch).or_insert(mb);
     }
@@ -173,7 +174,7 @@ mod tests {
 
     fn reload(m: &mut crate::app::model::Model, s: &crate::core::settings::Settings, accounts: Vec<crate::core::account::Account>) -> Vec<Effect> {
         let data = Ok((accounts, m.batches.clone(), m.instances.clone()));
-        let loaded = super::super::super::event::Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted: Vec::new(), resume: Vec::new(), measured: std::collections::HashMap::new() };
+        let loaded = super::super::super::event::Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted: Vec::new(), resume: Vec::new(), measured: std::collections::HashMap::new(), playtime: std::collections::HashMap::new() };
         run(m, s, std::time::Instant::now(), super::super::super::event::Event::Loaded(Box::new(loaded)))
     }
 
@@ -206,7 +207,7 @@ mod tests {
         m.batches[0].accept_conduct("MC.example", "aa11");
         let loaded = |resume: Vec<String>, m: &super::super::super::model::Model| {
             let data = Ok((m.accounts.clone(), m.batches.clone(), m.instances.clone()));
-            Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted: Vec::new(), resume, measured: std::collections::HashMap::new() }))
+            Event::Loaded(Box::new(Loaded { data, logs: Vec::new(), problems: Vec::new(), recovered: None, keep: false, adopted: Vec::new(), resume, measured: std::collections::HashMap::new(), playtime: std::collections::HashMap::new() }))
         };
         let event = loaded(Vec::new(), &m);
         assert!(!run(&mut m, &s, std::time::Instant::now(), event).iter().any(|e| matches!(e, Effect::Start { .. })), "nothing written down, nothing starts");
