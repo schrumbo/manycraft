@@ -1,10 +1,12 @@
 //! Sync: the one page where keeping game options, mod settings, worlds and screenshots the same across instances is
 //! set up once and then switched on and off per kind.
 
+mod folders;
 mod setup;
 
 use freya::prelude::*;
 
+use self::folders::{PathCaption, open_button};
 use self::setup::SetupPanel;
 use crate::core::i18n::{tr, trf};
 use crate::core::share::{self, Copies, KINDS, Kind, State as Shared};
@@ -16,7 +18,7 @@ use crate::view::kit::switch::Switch;
 use crate::view::kit::{off_ui, page, toast, use_theme};
 use crate::view::library;
 use crate::view::store::{Store, use_store};
-use crate::view::theme::frame;
+use crate::view::theme::{frame, space};
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct Who {
@@ -134,10 +136,20 @@ impl Component for SyncPage {
                 let on = state.get(kind);
                 let mut flip = change.clone();
                 let mut press = change.clone();
-                Line::new(format!("sync.kind.{}", kind_key(kind)), label(kind)).hint(blurb(kind)).control(Switch::new(format!("sync.kind.{}.switch", kind_key(kind)), label(kind), on).on_toggle(move |want| flip(Some(kind), want))).on_press(move |_| press(Some(kind), !on)).into_element()
+                let key = kind_key(kind);
+                let path = share::path_of(kind);
+                let open = open_button(format!("sync.kind.{key}.folder"), path.clone(), matches!(kind, Kind::Options));
+                let switch = Switch::new(format!("sync.kind.{key}.switch"), label(kind), on).on_toggle(move |want| flip(Some(kind), want));
+                let controls = rect().horizontal().cross_align(Alignment::Center).spacing(space::M).child(open).child(switch);
+                Line::new(format!("sync.kind.{key}"), label(kind)).hint(blurb(kind)).control(controls).below(PathCaption { id: format!("sync.kind.{key}.path"), path, ctx }).on_press(move |_| press(Some(kind), !on)).into_element()
             })
             .collect();
-        page::scrolling(scroll, col.child(group(&t, Some(tr("Was synchronisiert wird")), rows, Some(tr("Ausgeschaltet bekommt jede Instanz wieder eine eigene Kopie des gemeinsamen Stands.")))))
+        let home = Line::new("sync.folder", tr("Sync-Ordner"))
+            .hint(tr("Dateien, die du hier ablegst oder ersetzt, gelten für alle synchronisierten Instanzen ab ihrem nächsten Start."))
+            .control(open_button("sync.folder.open".into(), share::folder(), false))
+            .below(PathCaption { id: "sync.folder.path".into(), path: share::folder(), ctx });
+        col = col.child(group(&t, Some(tr("Was synchronisiert wird")), rows, Some(tr("Ausgeschaltet bekommt jede Instanz wieder eine eigene Kopie des gemeinsamen Stands."))));
+        page::scrolling(scroll, col.child(group(&t, Some(tr("Wo die Dateien liegen")), vec![home.into_element()], None)))
     }
 }
 
