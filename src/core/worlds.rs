@@ -253,10 +253,16 @@ pub fn game_dirs(instance_dir: &Path) -> Vec<(Uuid, PathBuf)> {
     dirs
 }
 
+/// The game folders of `instance` whose `sub` folder is a different place: accounts sharing one linked folder count once.
+pub fn distinct_dirs(instance_dir: &Path, sub: &str) -> Vec<(Uuid, PathBuf)> {
+    let mut seen = std::collections::HashSet::new();
+    game_dirs(instance_dir).into_iter().filter(|(_, game)| std::fs::canonicalize(game.join(sub)).map_or(true, |real| seen.insert(real))).collect()
+}
+
 /// Every world in every game folder of the instance in `instance_dir`, last played first.
 pub fn list(instance_dir: &Path) -> Vec<World> {
     let mut worlds = Vec::new();
-    for (account, game) in game_dirs(instance_dir) {
+    for (account, game) in distinct_dirs(instance_dir, SAVES) {
         let Ok(entries) = std::fs::read_dir(game.join(SAVES)) else { continue };
         for entry in entries.filter_map(Result::ok) {
             let dir = entry.path();

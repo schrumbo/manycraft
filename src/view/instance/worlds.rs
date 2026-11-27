@@ -598,6 +598,9 @@ impl Page {
             return;
         }
         let game = games_dir(&self.dir).join(account.simple().to_string());
+        if std::fs::canonicalize(game.join("saves")).ok().is_some_and(|to| world.dir.parent().and_then(|from| std::fs::canonicalize(from).ok()) == Some(to)) {
+            return;
+        }
         let (key, name, id) = (world.dir.clone(), world.name().to_owned(), self.id.clone());
         let progress = self.begin(key.clone(), Doing::Copy);
         let page = self.clone();

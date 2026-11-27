@@ -46,6 +46,9 @@ pub fn run() -> Report {
         eprintln!("instance folders: {} renamed, {} wait for their games to stop", moved.moved, moved.waiting);
     }
     report.problems = moved.problems;
+    if let Err(e) = super::share::migrate() {
+        eprintln!("the old sync settings were not taken over: {e:#}");
+    }
     *done = moved.waiting == 0;
     report
 }

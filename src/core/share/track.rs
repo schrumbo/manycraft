@@ -1,4 +1,4 @@
-//! What runs: when each game loaded, the baseline of its files then, and what flows from it to the sync folder after.
+//! What runs: when each game loaded, the baseline of its options then, and what flows from it to the sync folder after.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -6,12 +6,9 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use sha2::{Digest, Sha256};
-
-use super::{CONFIG, Mother, Own, files_in, flags_in, is_link, keys, notes, put_files, put_options, mend_config, read_file, read_text};
+use super::{Mother, Own, flags_in, keys, put_options, read_file, read_text};
 use crate::core::sync::{self, OPTIONS_FILE, Peers, Roots, SERVERS_FILE};
 
-const SCAN_EVERY: Duration = Duration::from_secs(3);
 const SHOWN_GRACE: Duration = Duration::from_secs(180);
 /// How long after loading a game's first start may still save what it detected; the game does so within seconds, a
 /// person changing options takes longer.
@@ -68,26 +65,16 @@ impl Base {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Stamp {
-    len: u64,
-    modified: Option<SystemTime>,
-    sha: [u8; 32],
-}
-
 /// The running games as sharing follows them.
 pub(crate) struct Tracker {
     mother: Mother,
     shown: fn(u32) -> bool,
     games: HashMap<String, Game>,
-    config: HashMap<String, Option<BTreeMap<String, Stamp>>>,
-    good: Option<BTreeMap<String, Held>>,
-    scanned: Option<Instant>,
 }
 
 impl Tracker {
     pub(crate) fn new(mother: Mother, shown: fn(u32) -> bool) -> Self {
-        Self { mother, shown, games: HashMap::new(), config: HashMap::new(), good: None, scanned: None }
+        Self { mother, shown, games: HashMap::new() }
     }
 
     /// Follows a game that started; until it loaded nothing it writes is trusted.
@@ -97,16 +84,6 @@ impl Tracker {
         }
         let key = start.key.clone();
         let adopted = start.adopted;
-        if let Some(Some(_)) = self.config.get(&start.instance) {
-            let own = start.own();
-            self.scan(&own);
-            self.config.insert(start.instance.clone(), None);
-        }
-        self.config.entry(start.instance.clone()).or_insert(None);
-        self.guard_shared(false);
-        if self.good.is_none() && flags_in(&start.dir).config {
-            self.good = Some(shared_config(&self.mother));
-        }
         self.games.insert(key.clone(), Game { start, shown: None, read: 0, base: None, saved_early: false });
         if adopted {
             self.loaded(&key);
@@ -124,13 +101,6 @@ impl Tracker {
         let options = read_text(&path).ok().flatten().map(|t| keys::map(&t)).unwrap_or_default();
         let servers = read_file(&game.start.game.join(SERVERS_FILE)).ok().flatten();
         game.base = Some(Base { options, servers, seen, at: Instant::now(), settled: game.saved_early });
-        let instance = game.start.instance.clone();
-        let dir = game.start.dir.clone();
-        let waiting = self.games.values().any(|g| g.start.instance == instance && g.base.is_none());
-        self.guard_shared(true);
-        if !waiting && matches!(self.config.get(&instance), Some(None) | None) {
-            self.config.insert(instance, stamps(&dir.join(CONFIG), None));
-        }
     }
 
     /// The game `key` saved the options `values` changed. The companion leaves out keys the save only added, so what
@@ -151,14 +121,14 @@ impl Tracker {
         if let Err(e) = sync::instance_options(roots, peers, &start.instance, values) {
             eprintln!("the options of {} were not kept: {e:#}", start.name);
         }
-        if values.is_empty() || !flags_in(&start.dir).options {
+        if values.is_empty() || !flags_in(&self.mother, &start.dir).options {
             return;
         }
         self.options_up(roots, peers, &start.own(), values);
     }
 
     fn options_up(&self, roots: &Roots, peers: &impl Peers, own: &Own, changes: &BTreeMap<String, String>) {
-        let applied = match put_options(&self.mother, own, changes) {
+        let applied = match put_options(&self.mother, changes) {
             Ok(applied) => applied,
             Err(e) => {
                 eprintln!("the options of {} were not shared: {e:#}", own.name);
@@ -168,7 +138,7 @@ impl Tracker {
         if applied.is_empty() {
             return;
         }
-        for other in running_sharers(roots, peers, &own.id, |f| f.options) {
+        for other in self.running_sharers(roots, peers, &own.id) {
             sync::send_options(peers, &other, &applied);
         }
     }
@@ -183,24 +153,6 @@ impl Tracker {
         if let Err(e) = sync::instance_servers(roots, peers, &start.instance, &bytes, Some(key)) {
             eprintln!("the server list of {} was not kept: {e:#}", start.name);
         }
-        if flags_in(&start.dir).servers {
-            self.servers_up(roots, peers, &start.own(), bytes);
-        }
-    }
-
-    fn servers_up(&self, roots: &Roots, peers: &impl Peers, own: &Own, bytes: Vec<u8>) {
-        if bytes.is_empty() {
-            return;
-        }
-        match put_files(&self.mother, own, vec![(SERVERS_FILE.to_owned(), bytes.clone())]) {
-            Ok(0) => {}
-            Ok(_) => {
-                for other in running_sharers(roots, peers, &own.id, |f| f.servers) {
-                    let _ = sync::instance_servers(roots, peers, &other, &bytes, None);
-                }
-            }
-            Err(e) => eprintln!("the server list of {} was not shared: {e:#}", own.name),
-        }
     }
 
     /// The game `key` with process `pid` ended: what it changed since its baseline flows up a last time.
@@ -209,52 +161,35 @@ impl Tracker {
             return;
         }
         let Some(game) = self.games.remove(key) else { return };
-        let own = game.start.own();
         if let Some(base) = &game.base
             && !game.start.companion
         {
             self.plain_exit(roots, peers, &game.start, base);
         }
-        if let Some(Some(_)) = self.config.get(&own.id) {
-            self.scan(&own);
-        }
-        let starting = game.base.is_none() || self.games.values().any(|g| g.base.is_none());
-        self.guard_shared(starting);
-        if !self.games.values().any(|g| flags_in(&g.start.dir).config) {
-            self.good = None;
-        }
-        let instance = &game.start.instance;
-        if !self.games.values().any(|g| &g.start.instance == instance) {
-            self.config.remove(instance);
-        } else if !self.games.values().any(|g| &g.start.instance == instance && g.base.is_none()) && matches!(self.config.get(instance), Some(None)) {
-            self.config.insert(instance.clone(), stamps(&own.dir.join(CONFIG), None));
-        }
     }
 
     fn plain_exit(&self, roots: &Roots, peers: &impl Peers, start: &Start, base: &Base) {
-        let flags = flags_in(&start.dir);
         let own = start.own();
-        if flags.options
-            && let Ok(Some(text)) = read_text(&start.game.join(OPTIONS_FILE))
+        if let Ok(Some(text)) = read_text(&start.game.join(OPTIONS_FILE))
             && keys::readable(&text)
         {
             let changes: BTreeMap<String, String> = keys::changed(&base.options, &keys::map(&text)).into_iter().filter(|(k, _)| !sync::PER_INSTANCE_KEYS.contains(&k.as_str())).collect();
             if !changes.is_empty() {
                 let _ = sync::instance_options(roots, peers, &start.instance, &changes);
-                self.options_up(roots, peers, &own, &changes);
+                if flags_in(&self.mother, &start.dir).options {
+                    self.options_up(roots, peers, &own, &changes);
+                }
             }
         }
-        if flags.servers
-            && let Ok(Some(bytes)) = read_file(&start.game.join(SERVERS_FILE))
+        if let Ok(Some(bytes)) = read_file(&start.game.join(SERVERS_FILE))
             && !bytes.is_empty()
             && base.servers.as_deref() != Some(bytes.as_slice())
         {
             let _ = sync::instance_servers(roots, peers, &start.instance, &bytes, None);
-            self.servers_up(roots, peers, &own, bytes);
         }
     }
 
-    /// Looks for games without the companion that loaded and for changed mod configs, at most every few seconds.
+    /// Looks for games without the companion that loaded, at most every few seconds.
     pub(crate) fn tick(&mut self, now: Instant) {
         let shown = self.shown;
         let mut loaded = Vec::new();
@@ -277,134 +212,15 @@ impl Tracker {
         for key in loaded {
             self.loaded(&key);
         }
-        if self.scanned.is_some_and(|at| now.saturating_duration_since(at) < SCAN_EVERY) {
-            return;
-        }
-        self.scanned = Some(now);
-        let starting = self.games.values().any(|g| g.base.is_none());
-        self.guard_shared(starting);
-        let waiting: Vec<Own> = self.config.iter().filter(|(id, c)| c.is_none() && self.games.values().filter(|g| &g.start.instance == *id).all(|g| g.base.is_some())).filter_map(|(id, _)| self.games.values().find(|g| &g.start.instance == id).map(|g| g.start.own())).collect();
-        for own in waiting {
-            if let Some(base) = stamps(&own.dir.join(CONFIG), None) {
-                self.config.insert(own.id, Some(base));
-            }
-        }
-        let owns: Vec<Own> = self.config.iter().filter(|(_, c)| c.is_some()).filter_map(|(id, _)| self.games.values().find(|g| &g.start.instance == id).map(|g| g.start.own())).collect();
-        for own in owns {
-            self.scan(&own);
-        }
     }
 
-    /// Follows the shared mod settings while a sharing game runs, since games write them through the link. While a game
-    /// is still starting or just finished, a setting it deleted, emptied or broke gets its last good state back; later only a broken one
-    /// does, since deleting or clearing is then a choice. The sync folder notes what came back, the history keeps every
-    /// other change and the broken version. Only files whose size or time changed are read.
-    fn guard_shared(&mut self, starting: bool) {
-        let Some(good) = self.good.as_mut() else { return };
-        let Ok(listed) = files_in(&self.mother.path(CONFIG)) else { return };
-        let mut back = Vec::new();
-        let mut seen = Vec::new();
-        let mut present = std::collections::HashSet::new();
-        for (rel, path) in listed {
-            let Ok(meta) = fs::metadata(&path) else { continue };
-            present.insert(rel.clone());
-            let stamp = (meta.len(), meta.modified().ok());
-            if good.get(&rel).is_some_and(|h| h.stamp == stamp) {
-                continue;
-            }
-            let Ok(bytes) = fs::read(&path) else { continue };
-            let full = format!("{CONFIG}/{rel}");
-            match good.get_mut(&rel) {
-                Some(held) if held.bytes == bytes => held.stamp = stamp,
-                Some(held) if !broken(&rel, None, &held.bytes) && (broken(&rel, Some(&held.bytes), &bytes) || (starting && emptied(&bytes) && !emptied(&held.bytes))) => {
-                    back.push((full, held.bytes.clone(), Some(bytes)));
-                }
-                Some(held) => {
-                    seen.push((full, bytes.clone()));
-                    *held = Held { stamp, bytes };
-                }
-                None => {
-                    if !broken(&rel, None, &bytes) {
-                        seen.push((full, bytes.clone()));
-                    }
-                    good.insert(rel, Held { stamp, bytes });
-                }
-            }
-        }
-        let gone: Vec<String> = good.keys().filter(|rel| !present.contains(*rel)).cloned().collect();
-        for rel in gone {
-            if starting && good.get(&rel).is_some_and(|h| !broken(&rel, None, &h.bytes)) {
-                if let Some(held) = good.get(&rel) {
-                    back.push((format!("{CONFIG}/{rel}"), held.bytes.clone(), None));
-                }
-            } else {
-                good.remove(&rel);
-            }
-        }
-        if back.is_empty() && seen.is_empty() {
-            return;
-        }
-        let name = self.games.values().max_by_key(|g| (g.base.is_none(), g.start.at)).map(|g| g.start.name.clone()).unwrap_or_default();
-        match mend_config(&self.mother, &back, &seen) {
-            Ok(put) if !put.is_empty() => {
-                let rels = put.into_iter().map(|r| r.trim_start_matches("config/").to_owned()).collect();
-                if let Err(e) = notes::add(&self.mother, &name, rels) {
-                    eprintln!("the restored mod settings were not noted: {e:#}");
-                }
-            }
-            Ok(_) => {}
-            Err(e) => eprintln!("the shared mod settings a start of {name} broke were not restored: {e:#}"),
-        }
+    fn running_sharers(&self, roots: &Roots, peers: &impl Peers, except: &str) -> Vec<String> {
+        let mut out: Vec<String> = peers.connected().iter().filter_map(|k| peers.game(k)).map(|(i, _)| i).filter(|i| i != except && crate::core::instance::valid_id(i)).collect();
+        out.sort();
+        out.dedup();
+        out.retain(|i| flags_in(&self.mother, &roots.instance(i)).options);
+        out
     }
-
-    fn scan(&mut self, own: &Own) {
-        let Some(Some(before)) = self.config.get(&own.id) else { return };
-        let dir = own.dir.join(CONFIG);
-        if is_link(&dir) {
-            return;
-        }
-        let Some(now) = stamps(&dir, Some(before)) else { return };
-        let changed: Vec<String> = now.iter().filter(|(rel, s)| before.get(*rel).is_none_or(|b| b.sha != s.sha)).map(|(rel, _)| rel.clone()).collect();
-        self.config.insert(own.id.clone(), Some(now));
-        if changed.is_empty() || !flags_in(&own.dir).config {
-            return;
-        }
-        let mut up = Vec::new();
-        for rel in changed {
-            let Ok(Some(bytes)) = read_file(&rel.split('/').fold(dir.clone(), |p, part| p.join(part))) else { continue };
-            let full = format!("{CONFIG}/{rel}");
-            let theirs = read_file(&self.mother.path(&full)).ok().flatten();
-            if broken(&rel, theirs.as_deref(), &bytes) {
-                continue;
-            }
-            up.push((full, bytes));
-        }
-        if !up.is_empty()
-            && let Err(e) = put_files(&self.mother, own, up)
-        {
-            eprintln!("the mod settings of {} were not shared: {e:#}", own.name);
-        }
-    }
-}
-
-/// Every shared mod setting as it is now, by path relative to the `config` folder.
-/// A shared mod setting as last seen good.
-#[derive(Debug)]
-struct Held {
-    stamp: (u64, Option<SystemTime>),
-    bytes: Vec<u8>,
-}
-
-fn shared_config(mother: &Mother) -> BTreeMap<String, Held> {
-    files_in(&mother.path(CONFIG))
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(rel, path)| {
-            let meta = fs::metadata(&path).ok()?;
-            let bytes = fs::read(&path).ok()?;
-            Some((rel, Held { stamp: (meta.len(), meta.modified().ok()), bytes }))
-        })
-        .collect()
 }
 
 /// Takes the keys the game added to its options file since `base` saw it as defaults it filled in: a later change of
@@ -433,64 +249,6 @@ fn file_stamp(path: &Path) -> Option<(u64, Option<SystemTime>)> {
     fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()))
 }
 
-/// Whether `bytes` for config file `rel` look like a file a crash or a reset left: empty, or no longer text or JSON
-/// where `before` was.
-fn broken(rel: &str, before: Option<&[u8]>, bytes: &[u8]) -> bool {
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return true;
-    }
-    let Some(before) = before else { return std::str::from_utf8(bytes).is_err() && !binary(rel) };
-    let was_text = std::str::from_utf8(before).is_ok();
-    if was_text && std::str::from_utf8(bytes).is_err() {
-        return true;
-    }
-    let json = |b: &[u8]| serde_json::from_slice::<serde_json::Value>(b).is_ok();
-    rel.ends_with(".json") && json(before) && !json(bytes)
-}
-
-fn emptied(bytes: &[u8]) -> bool {
-    matches!(std::str::from_utf8(bytes).map(str::trim), Ok("{}" | "[]"))
-}
-
-fn binary(rel: &str) -> bool {
-    [".dat", ".nbt", ".png", ".bin", ".db"].iter().any(|e| rel.ends_with(e))
-}
-
-/// The stamp of every file under `dir`, `None` when the folder cannot be read. A file that cannot be read keeps its stamp
-/// from `before`, so a passing error never looks like a change.
-fn stamps(dir: &Path, before: Option<&BTreeMap<String, Stamp>>) -> Option<BTreeMap<String, Stamp>> {
-    let mut out = BTreeMap::new();
-    for (rel, path) in files_in(dir).ok()? {
-        let old = before.and_then(|b| b.get(&rel));
-        let Ok(meta) = fs::metadata(&path) else {
-            if let Some(old) = old {
-                out.insert(rel, old.clone());
-            }
-            continue;
-        };
-        let (len, modified) = (meta.len(), meta.modified().ok());
-        if let Some(old) = old
-            && old.len == len
-            && old.modified == modified
-            && modified.is_some()
-        {
-            out.insert(rel, old.clone());
-            continue;
-        }
-        match fs::read(&path) {
-            Ok(bytes) => {
-                out.insert(rel, Stamp { len, modified, sha: Sha256::digest(&bytes).into() });
-            }
-            Err(_) => {
-                if let Some(old) = old {
-                    out.insert(rel, old.clone());
-                }
-            }
-        }
-    }
-    Some(out)
-}
-
 fn logged_loaded(game: &mut Game) -> bool {
     let path = game.start.game.join("logs").join("latest.log");
     let Ok(meta) = fs::metadata(&path) else { return false };
@@ -514,10 +272,3 @@ fn logged_loaded(game: &mut Game) -> bool {
     LOADED_MARKS.iter().any(|m| text.contains(m))
 }
 
-fn running_sharers(roots: &Roots, peers: &impl Peers, except: &str, wanted: impl Fn(super::Sharing) -> bool) -> Vec<String> {
-    let mut out: Vec<String> = peers.connected().iter().filter_map(|k| peers.game(k)).map(|(i, _)| i).filter(|i| i != except && crate::core::instance::valid_id(i)).collect();
-    out.sort();
-    out.dedup();
-    out.retain(|i| wanted(flags_in(&roots.instance(i))));
-    out
-}

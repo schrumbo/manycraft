@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
-use super::worlds::game_dirs;
+use super::worlds::distinct_dirs;
 
 /// One screenshot in the game folder of one account.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,7 +43,7 @@ pub fn encode(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
 /// Every screenshot in every game folder of the instance in `instance_dir`, newest first.
 pub fn list(instance_dir: &Path) -> Vec<Shot> {
     let mut shots = Vec::new();
-    for (account, game) in game_dirs(instance_dir) {
+    for (account, game) in distinct_dirs(instance_dir, "screenshots") {
         let Ok(entries) = std::fs::read_dir(game.join("screenshots")) else { continue };
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();

@@ -83,7 +83,7 @@ pub fn dir(instance_dir: &Path) -> PathBuf {
 
 /// Bytes in the worlds of every game folder of the instance in `instance_dir`.
 pub fn worlds_size(instance_dir: &Path) -> u64 {
-    worlds::game_dirs(instance_dir).iter().map(|(_, game)| worlds::size(&game.join(SAVES))).sum()
+    worlds::distinct_dirs(instance_dir, SAVES).iter().map(|(_, game)| worlds::size(&game.join(SAVES))).sum()
 }
 
 /// Whether snapshots are wanted for an instance whose worlds are above [`LARGE`]; `None` until the owner was asked.
@@ -188,7 +188,7 @@ fn sources(instance_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
             out.push((PathBuf::from(name), from));
         }
     }
-    for (_, game) in worlds::game_dirs(instance_dir) {
+    for (_, game) in worlds::distinct_dirs(instance_dir, SAVES) {
         let Ok(entries) = std::fs::read_dir(game.join(SAVES)) else { continue };
         for world in entries.filter_map(Result::ok).map(|e| e.path()) {
             if std::fs::symlink_metadata(&world).is_ok_and(|m| m.is_dir())
@@ -300,7 +300,7 @@ pub(super) fn restore_in(root: &Path, instance_id: &str, id: &str, millis: u64) 
         return Err(fail(anyhow::Error::new(Final(tr("Die Sicherung gehört zu einer anderen Instanz.")))));
     }
     let mut swapped: Vec<PathBuf> = PARTS.iter().filter(|p| !super::share::linked(&dir, p)).map(PathBuf::from).collect();
-    swapped.extend(staged_worlds(&staging));
+    swapped.extend(staged_worlds(&staging).into_iter().filter(|rel| !rel.parent().is_some_and(|saves| super::share::is_linked(&dir.join(saves)))));
     let mut trashed: Vec<(PathBuf, String)> = Vec::new();
     let mut placed: Vec<PathBuf> = Vec::new();
     let undo = |trashed: &[(PathBuf, String)], placed: &[PathBuf]| {
