@@ -17,6 +17,7 @@ mod icon;
 mod text;
 
 pub use self::art::{Art, shared};
+pub use self::icon::icon as item_icon;
 use self::canvas::gui_scale;
 
 /// Styled text: its runs in order; a `\n` in a run starts a new line.

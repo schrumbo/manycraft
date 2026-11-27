@@ -110,7 +110,7 @@ mod tests {
     }
 
     fn menu(id: i32, first: &str) -> Menu {
-        let slot = crate::core::ipc::Slot { item: "stone".into(), name: Words { text: first.into(), runs: Vec::new() }, count: 1, lore: Vec::new(), glint: false, rgb: None, named: false };
+        let slot = crate::core::ipc::Slot { item: "stone".into(), name: Words { text: first.into(), runs: Vec::new() }, count: 1, lore: Vec::new(), glint: false, rgb: None, named: false, dye: None };
         Menu { id, kind: "generic_9x1".into(), title: Words::default(), columns: 9, top: 9, slots: vec![Some(slot)], carried: None, readable: true }
     }
 

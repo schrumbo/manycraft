@@ -2,7 +2,9 @@
 //! and a chat line to answer them, all in one sheet.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use freya::elements::image::ImageHandle;
 use freya::engine::prelude::AlphaType;
@@ -10,7 +12,8 @@ use freya::prelude::*;
 
 use crate::app::event::Event as AppEvent;
 use crate::app::model::{Game, Model, Need};
-use crate::core::headless::{MAP_SIDE, map_rgba};
+use crate::core::chat_text::{self, Run};
+use crate::core::headless::{MAP_SIDE, item_icon, map_rgba};
 use crate::core::i18n::{tr, trf};
 use crate::core::ipc::{Click, Menu, Slot, Titles};
 use crate::view::drive::use_spot;
@@ -20,7 +23,7 @@ use crate::view::kit::field::Field;
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::text::{caption, figure, line, para, spacer, strong};
 use crate::view::kit::tooltip::WithTip;
-use crate::view::kit::{held, ring, use_theme};
+use crate::view::kit::{Live, held, ring, use_theme};
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, WAITING, font, frame, iconsize, space};
 
@@ -35,6 +38,74 @@ const ROOM: f32 = 200.;
 const PLAYER_SLOTS: usize = 36;
 const HOTBAR: usize = 27;
 const RECENT_LINES: usize = 3;
+const ICON: f32 = 32.;
+const ICON_PX: u32 = 64;
+const ICONS_KEPT: usize = 600;
+const COUNT_INK: u32 = 0xAAAAAA;
+
+type IconKey = (String, Option<u32>, bool);
+type Pixels = (u32, u32, Vec<u8>);
+type Reply = async_channel::Sender<Option<Option<Pixels>>>;
+
+thread_local! {
+    static ICONS: RefCell<HashMap<IconKey, Option<ImageHandle>>> = RefCell::new(HashMap::new());
+}
+
+fn cached_icon(key: &IconKey) -> Option<Option<ImageHandle>> {
+    ICONS.with(|i| i.borrow().get(key).cloned())
+}
+
+fn remember_icon(key: IconKey, picture: Option<ImageHandle>) {
+    ICONS.with(|i| {
+        let mut i = i.borrow_mut();
+        if i.len() >= ICONS_KEPT {
+            i.clear();
+        }
+        i.insert(key, picture);
+    });
+}
+
+/// Draws one item at a time on a thread of its own and keeps every picture it made, so a menu of fifty stacks of stone
+/// draws stone once. `None` back means the game's art could not be read; that is not kept, and the slot shows its name instead.
+fn painter() -> &'static async_channel::Sender<(IconKey, Reply)> {
+    static PAINTER: OnceLock<async_channel::Sender<(IconKey, Reply)>> = OnceLock::new();
+    PAINTER.get_or_init(|| {
+        let (tx, rx) = async_channel::unbounded::<(IconKey, Reply)>();
+        let _ = std::thread::Builder::new().name("menu-icons".into()).spawn(move || {
+            let mut made: HashMap<IconKey, Option<Pixels>> = HashMap::new();
+            while let Ok((key, reply)) = rx.recv_blocking() {
+                if reply.is_closed() {
+                    continue;
+                }
+                if let Some(done) = made.get(&key) {
+                    let _ = reply.send_blocking(Some(done.clone()));
+                    continue;
+                }
+                match item_icon(&key.0, key.1, key.2, ICON_PX) {
+                    Ok(drawn) => {
+                        let pixels = drawn.map(|i| (i.width(), i.height(), i.into_raw()));
+                        if made.len() >= ICONS_KEPT {
+                            made.clear();
+                        }
+                        made.insert(key, pixels.clone());
+                        let _ = reply.send_blocking(Some(pixels));
+                    }
+                    Err(_) => {
+                        let _ = reply.send_blocking(None);
+                    }
+                }
+            }
+        });
+        tx
+    })
+}
+
+async fn paint(key: IconKey) -> Option<Option<ImageHandle>> {
+    let (tx, rx) = async_channel::bounded(1);
+    painter().send((key, tx)).await.ok()?;
+    let pixels = rx.recv().await.ok()??;
+    Some(pixels.and_then(|(w, h, rgba)| ImageHandle::from_rgba(w, h, Bytes::from(rgba), AlphaType::Unpremul)))
+}
 
 /// Opens the Bildschirm of the game `key`.
 pub fn open(store: Store, key: &str) {
@@ -248,6 +319,21 @@ impl Component for Cell {
         let mut hovered = use_state(|| false);
         let mut pressed = use_state(|| false);
         let label = self.slot.as_ref().map_or_else(|| tr("Leerer Platz"), slot_label);
+        let icon_key: Option<IconKey> = self.slot.as_ref().map(|s| (s.item.clone(), s.dye, s.glint));
+        let art = use_state(|| icon_key.as_ref().and_then(|k| cached_icon(k).map(|p| (k.clone(), p))));
+        use_side_effect_with_deps(&icon_key, move |key| {
+            let Some(key) = key.clone() else { return };
+            if let Some(picture) = cached_icon(&key) {
+                art.settle(Some((key, picture)));
+                return;
+            }
+            spawn(async move {
+                if let Some(picture) = paint(key.clone()).await {
+                    remember_icon(key.clone(), picture.clone());
+                    art.settle(Some((key, picture)));
+                }
+            });
+        });
         let spot = use_spot(&format!("screen.slot.{}", self.index), "slot", &label, self.live);
         let live = self.live;
         let (key, menu) = (self.key.clone(), self.menu);
@@ -313,7 +399,21 @@ impl Component for Cell {
             cell = cell.border(border);
         }
         let mut inner = rect().width(Size::fill()).height(Size::fill()).padding(space::XS).spacing(space::XXS).corner_radius(t.shape.small).background(wash);
-        if let Some(slot) = &self.slot {
+        let shown = art.read().as_ref().filter(|(k, _)| Some(k) == icon_key.as_ref()).map(|(_, p)| p.clone());
+        if let (Some(slot), Some(Some(picture))) = (&self.slot, &shown) {
+            let face = image(picture.clone()).width(Size::px(ICON)).height(Size::px(ICON)).aspect_ratio(AspectRatio::None);
+            inner = inner.center().child(face);
+            if slot.count > 1 {
+                let badge = rect()
+                    .position(Position::new_absolute().right(space::XXS).bottom(space::XXS))
+                    .padding((0., space::XXS + 1.))
+                    .corner_radius(t.shape.small / 2.)
+                    .background(t.surface)
+                    .layer(Layer::Relative(2))
+                    .child(figure(&t, slot.count.to_string(), font::CAPTION2, t.text1).font_weight(FontWeight::SEMI_BOLD));
+                cell = cell.child(badge);
+            }
+        } else if let Some(slot) = &self.slot {
             let mut top = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::XS);
             if let Some(rgb) = slot.rgb {
                 let [_, r, g, b] = rgb.to_be_bytes();
@@ -330,8 +430,18 @@ impl Component for Cell {
         }
         let cell = cell.child(inner);
         let tip = self.slot.as_ref().map(|s| std::iter::once(slot_label(s)).chain(s.lore.iter().map(|l| l.text.clone())).collect::<Vec<_>>().join("\n"));
-        WithTip::new(tip, cell).into_element()
+        let lines = self.slot.as_ref().map(tip_lines).unwrap_or_default();
+        WithTip::new(tip, cell).styled(lines).into_element()
     }
+}
+
+/// The lines of a slot's tooltip: its name in the colours the server gave it, with the count after it, then its lore.
+fn tip_lines(slot: &Slot) -> Vec<Vec<Run>> {
+    let mut name = chat_text::styled(&slot.name.runs, &slot.name.text);
+    if slot.count > 1 {
+        name.push(Run { text: format!(" ×{}", slot.count), color: Some(COUNT_INK), ..Run::default() });
+    }
+    std::iter::once(name).chain(slot.lore.iter().map(|l| chat_text::styled(&l.runs, &l.text))).collect()
 }
 
 /// What a key press on a focused slot does: Shift moves the stack, Ctrl, Alt or Cmd takes or puts half, plain is a left click.
@@ -370,8 +480,35 @@ fn chat(store: Store, key: &str, draft: State<String>, live: bool, focus: bool) 
 mod tests {
     use freya::prelude::Modifiers;
 
-    use super::keyed;
-    use crate::core::ipc::Click;
+    use super::{COUNT_INK, keyed, tip_lines};
+    use crate::core::chat_text::Run;
+    use crate::core::ipc::{Click, Slot, Words};
+
+    fn run(text: &str, color: Option<u32>) -> Run {
+        Run { text: text.into(), color, ..Run::default() }
+    }
+
+    fn slot(name: Words, count: u32, lore: Vec<Words>) -> Slot {
+        Slot { item: "diamond_sword".into(), name, count, lore, glint: false, rgb: None, named: true, dye: None }
+    }
+
+    #[test]
+    fn a_tooltip_shows_the_coloured_name_the_count_and_every_lore_line() {
+        let name = Words { text: "Blade".into(), runs: vec![run("Bl", Some(0xFF5555)), run("ade", Some(0x55FFFF))] };
+        let lore = vec![Words { text: "Sharp".into(), runs: vec![run("Sharp", Some(0xAA00AA))] }, Words { text: "§7Old".into(), runs: Vec::new() }];
+        let lines = tip_lines(&slot(name, 3, lore));
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], vec![run("Bl", Some(0xFF5555)), run("ade", Some(0x55FFFF)), run(" ×3", Some(COUNT_INK))]);
+        assert_eq!(lines[1], vec![run("Sharp", Some(0xAA00AA))]);
+        assert_eq!(lines[2][0].text, "Old");
+        assert_eq!(lines[2][0].color, Some(0xAAAAAA));
+    }
+
+    #[test]
+    fn a_single_item_shows_no_count_and_a_plain_name_has_no_colour() {
+        let lines = tip_lines(&slot(Words { text: "Stone".into(), runs: Vec::new() }, 1, Vec::new()));
+        assert_eq!(lines, vec![vec![run("Stone", None)]]);
+    }
 
     #[test]
     fn keys_on_a_slot_map_to_the_three_clicks() {

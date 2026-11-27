@@ -411,7 +411,7 @@ fn slot_of(stack: &Stack) -> Slot {
     let known = usize::try_from(stack.item).ok().and_then(|i| ITEMS.get(i));
     let (id, english, rgb) = known.map_or(("unknown", "?", None), |(id, name, rgb)| (*id, *name, *rgb));
     let name = stack.name.as_ref().map_or_else(|| Words { text: english.to_owned(), runs: Vec::new() }, words);
-    Slot { item: id.to_owned(), name, count: u32::try_from(stack.count).unwrap_or(0), lore: stack.lore.iter().map(words).collect(), glint: stack.glint, rgb, named: stack.name.is_some() }
+    Slot { item: id.to_owned(), name, count: u32::try_from(stack.count).unwrap_or(0), lore: stack.lore.iter().map(words).collect(), glint: stack.glint, rgb, named: stack.name.is_some(), dye: stack.dye }
 }
 #[cfg(test)]
 mod tests {
