@@ -95,6 +95,27 @@ pub(super) fn move_children(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The size of every file under `path`, `None` when counting is not done by `until`; links are not followed.
+pub(super) fn size_within(path: &Path, until: Instant) -> Option<u64> {
+    let mut total = 0;
+    let mut todo = vec![path.to_path_buf()];
+    while let Some(at) = todo.pop() {
+        for entry in fs::read_dir(&at).ok()? {
+            if Instant::now() >= until {
+                return None;
+            }
+            let entry = entry.ok()?;
+            let kind = entry.file_type().ok()?;
+            if kind.is_dir() && !is_link(&entry.path()) {
+                todo.push(entry.path());
+            } else if kind.is_file() {
+                total += entry.metadata().ok()?.len();
+            }
+        }
+    }
+    Some(total)
+}
+
 /// The game folders of the instance in `dir`, one per account that played.
 pub(super) fn game_dirs(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(instance::games_dir(dir)) else { return Vec::new() };

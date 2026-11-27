@@ -2389,5 +2389,9 @@
   "Behält ihre eigenen Dateien.": "Keeps its own files.",
   "Gilt ab dem nächsten Start.": "Applies from the next start.",
   "Schließ zuerst die Instanz „%@“, ihr Stand wird der gemeinsame.": "Close the instance “%@” first; its state becomes the shared one.",
-  "Ein Ordner der Instanz ist gerade in Benutzung. Schließ das Spiel und versuch es noch einmal.": "A folder of the instance is in use right now. Close the game and try again."
+  "Ein Ordner der Instanz ist gerade in Benutzung. Schließ das Spiel und versuch es noch einmal.": "A folder of the instance is in use right now. Close the game and try again.",
+  "Sync stellt gerade Ordner dieser Instanz um. Versuch es gleich noch einmal.": "Sync is switching folders of this instance right now. Try again in a moment.",
+  "Sync ausschalten?": "Turn off Sync?",
+  "Es entstehen %1$lld eigene Kopien, zusammen etwa %2$@.": "This creates %1$lld separate copies, about %2$@ together.",
+  "Es entstehen mehrere Kopien.": "This creates several copies."
 }

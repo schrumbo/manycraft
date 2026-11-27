@@ -184,6 +184,7 @@ struct Shared {
     shared_options: Option<PathBuf>,
     servers: PathBuf,
     saves: PathBuf,
+    shared_saves: Option<PathBuf>,
 }
 
 impl Shared {
@@ -198,6 +199,7 @@ impl Shared {
             shared_options: share::flags(&instance.dir()).options.then(|| share::Mother::current().path(OPTIONS_FILE)),
             servers: instance.dir().join(SERVERS_FILE),
             saves: instance.dir().join(super::launchers::SAVES_SEED),
+            shared_saves: share::flags(&instance.dir()).saves.then(|| share::Mother::current().path("saves")),
         }
     }
 }
@@ -256,12 +258,24 @@ fn prepare_in(dir: &Path, shared: &Shared, siblings: &[PathBuf]) -> Result<()> {
     }
     copy_options(share::compose(&shared.options, shared.shared_options.as_deref())?.as_deref(), &dir.join(OPTIONS_FILE))?;
     sync::copy_servers(&shared.servers, dir, siblings, true)?;
-    adopt_saves(&shared.saves, dir)
+    adopt_saves(&shared.saves, shared.shared_saves.as_deref(), dir)
 }
 
-fn adopt_saves(seed: &Path, dir: &Path) -> Result<()> {
+fn adopt_saves(seed: &Path, shared: Option<&Path>, dir: &Path) -> Result<()> {
     let target = dir.join("saves");
-    if !seed.is_dir() || fs::symlink_metadata(&target).is_ok() {
+    if !seed.is_dir() {
+        return Ok(());
+    }
+    if let Some(shared) = shared {
+        share::adopt_seed(seed, shared)?;
+        if fs::read_dir(seed).is_ok_and(|mut d| d.next().is_none()) {
+            let _ = fs::remove_dir(seed);
+        } else if fs::symlink_metadata(&target).is_err() {
+            return fs::rename(seed, &target).with_context(|| format!("cannot move the imported worlds to {}", target.display()));
+        }
+        return Ok(());
+    }
+    if fs::symlink_metadata(&target).is_ok() {
         return Ok(());
     }
     fs::rename(seed, &target).with_context(|| format!("cannot move the imported worlds to {}", target.display()))
@@ -2231,6 +2245,7 @@ mod tests {
             shared_options: None,
             servers: batch.join(sync::SERVERS_FILE),
             saves: batch.join(super::super::launchers::SAVES_SEED),
+            shared_saves: None,
         };
         Dirs { inst: base.join("inst"), mods: shared.mods.clone(), config: shared.config.clone(), template: shared.options.clone(), shared, _root: root }
     }
@@ -2260,6 +2275,35 @@ mod tests {
         prep(&d).unwrap();
         assert!(d.inst.join("saves").join("Mine").is_dir() && !d.inst.join("saves").join("Seed").exists());
         assert!(d.shared.saves.join("Seed").is_dir());
+    }
+
+    #[test]
+    fn seeded_worlds_join_the_shared_saves_when_saves_sync_is_on() {
+        let mut d = dirs();
+        let shared = d.inst.with_file_name("sync-saves");
+        d.shared.shared_saves = Some(shared.clone());
+        fs::create_dir_all(d.shared.saves.join("New")).unwrap();
+        fs::create_dir_all(d.shared.saves.join("Dup")).unwrap();
+        fs::write(d.shared.saves.join("New").join("level.dat"), b"n").unwrap();
+        fs::write(d.shared.saves.join("Dup").join("level.dat"), b"seed").unwrap();
+        fs::create_dir_all(shared.join("Dup")).unwrap();
+        fs::write(shared.join("Dup").join("level.dat"), b"shared").unwrap();
+        prep(&d).unwrap();
+        assert_eq!(fs::read(shared.join("New").join("level.dat")).unwrap(), b"n");
+        assert_eq!(fs::read(shared.join("Dup").join("level.dat")).unwrap(), b"shared");
+        assert_eq!(fs::read(d.inst.join("saves").join("Dup").join("level.dat")).unwrap(), b"seed");
+        assert!(!d.inst.join("saves").join("New").exists() && !d.shared.saves.exists());
+    }
+
+    #[test]
+    fn seeded_worlds_that_all_joined_leave_no_saves_folder_behind() {
+        let mut d = dirs();
+        let shared = d.inst.with_file_name("sync-saves");
+        d.shared.shared_saves = Some(shared.clone());
+        fs::create_dir_all(d.shared.saves.join("Only")).unwrap();
+        prep(&d).unwrap();
+        assert!(shared.join("Only").is_dir());
+        assert!(!d.inst.join("saves").exists() && !d.shared.saves.exists());
     }
 
     #[test]
