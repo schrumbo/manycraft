@@ -973,10 +973,51 @@ fn place_local(local: &[String], disabled: &HashSet<String>, dir: &Path) -> Resu
     Ok(())
 }
 
-fn place(agent: &ureq::Agent, jars: Option<&Path>, m: &ModRef, off: bool, dir: &Path) -> Result<bool> {
+/// What the file the ledger recorded looked like on disk: its size and modification time in nanoseconds since the epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Stamp {
+    size: u64,
+    mtime: u64,
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Option<Self> {
+        let meta = path.metadata().ok().filter(|m| m.is_file())?;
+        let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some(Self { size: meta.len(), mtime: u64::try_from(mtime.as_nanos()).ok()? })
+    }
+}
+
+/// One line of the ledger: the SHA-1 a synced file had and, when known, the stamp it had then. A file whose stamp still
+/// matches is the recorded file, so it is not hashed again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Recorded {
+    sha1: String,
+    stamp: Option<Stamp>,
+}
+
+impl Recorded {
+    fn has(&self, path: &Path, sha1: &str) -> Result<bool> {
+        if !path.is_file() {
+            return Ok(false);
+        }
+        if self.sha1.eq_ignore_ascii_case(sha1) && self.stamp.is_some() && self.stamp == Stamp::of(path) {
+            return Ok(true);
+        }
+        Ok(net::file_sha1(path)?.eq_ignore_ascii_case(sha1))
+    }
+}
+
+fn place(agent: &ureq::Agent, jars: Option<&Path>, m: &ModRef, off: bool, dir: &Path, managed: &HashMap<String, Recorded>) -> Result<bool> {
     let (on_path, off_path) = (dir.join(&m.file_name), dir.join(format!("{}{DISABLED}", m.file_name)));
     let (want, other) = if off { (off_path, on_path) } else { (on_path, off_path) };
-    let right = |path: &Path| -> Result<bool> { Ok(path.is_file() && net::file_sha1(path)?.eq_ignore_ascii_case(&m.sha1)) };
+    let recorded = managed.get(&m.file_name.to_lowercase());
+    let right = |path: &Path| -> Result<bool> {
+        match recorded {
+            Some(entry) => entry.has(path, &m.sha1),
+            None => Ok(path.is_file() && net::file_sha1(path)?.eq_ignore_ascii_case(&m.sha1)),
+        }
+    };
     if right(&want)? {
         return Ok(false);
     }
@@ -994,23 +1035,31 @@ fn place(agent: &ureq::Agent, jars: Option<&Path>, m: &ModRef, off: bool, dir: &
     Ok(true)
 }
 
-fn read_ledger(path: &Path) -> HashMap<String, String> {
+fn read_ledger(path: &Path) -> HashMap<String, Recorded> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     text.lines()
         .filter_map(|line| {
-            let (name, hash) = line.trim().rsplit_once(char::is_whitespace)?;
-            let (name, hash) = (name.trim().to_lowercase(), hash.to_lowercase());
-            (!name.is_empty() && hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some((name, hash))
+            let (rest, last) = line.trim().rsplit_once(char::is_whitespace)?;
+            let (rest, hash, stamp) = match last.parse::<u64>() {
+                Ok(mtime) => {
+                    let (rest, size) = rest.trim_end().rsplit_once(char::is_whitespace)?;
+                    let (rest, hash) = rest.trim_end().rsplit_once(char::is_whitespace)?;
+                    (rest, hash, Some(Stamp { size: size.parse().ok()?, mtime }))
+                }
+                Err(_) => (rest, last, None),
+            };
+            let (name, sha1) = (rest.trim().to_lowercase(), hash.to_lowercase());
+            (!name.is_empty() && sha1.len() == 40 && sha1.bytes().all(|b| b.is_ascii_hexdigit())).then_some((name, Recorded { sha1, stamp }))
         })
         .collect()
 }
 
-pub(super) fn managed_files(instance_dir: &Path) -> HashMap<String, String> {
+pub(super) fn managed_files(instance_dir: &Path) -> HashMap<String, Recorded> {
     read_ledger(&instance_dir.join(LEDGER))
 }
 
-pub(super) fn is_managed(managed: &HashMap<String, String>, name: &str, path: &Path) -> bool {
-    managed.get(&name.to_lowercase()).is_some_and(|hash| net::file_sha1(path).is_ok_and(|actual| actual == *hash))
+pub(super) fn is_managed(managed: &HashMap<String, Recorded>, name: &str, path: &Path) -> bool {
+    managed.get(&name.to_lowercase()).is_some_and(|entry| entry.has(path, &entry.sha1).unwrap_or(false))
 }
 
 #[cfg(test)]
@@ -1036,6 +1085,7 @@ fn sync_from(agent: &ureq::Agent, jars: Option<&Path>, mods: &[ModRef], local: &
             jobs.push(m);
         }
     }
+    let managed = read_ledger(ledger);
     let mut synced: Vec<(String, String)> = jobs.iter().map(|m| (m.file_name.to_lowercase(), m.sha1.to_lowercase())).collect();
     synced.sort_unstable();
     keep.extend(local_keys);
@@ -1046,13 +1096,12 @@ fn sync_from(agent: &ureq::Agent, jars: Option<&Path>, mods: &[ModRef], local: &
     let fetched = pool()?.install(|| {
         jobs.par_iter()
             .map(|m| {
-                let made = place(agent, jars, m, off.contains(&m.file_name.to_lowercase()), dir);
+                let made = place(agent, jars, m, off.contains(&m.file_name.to_lowercase()), dir, &managed);
                 progress(placed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, total);
                 made
             })
             .collect::<Result<Vec<_>>>()
     })?;
-    let managed = read_ledger(ledger);
     for (name, file) in list_jars(dir)? {
         if keep.contains(&name) || name == super::fleet::COMPANION_FILE {
             continue;
@@ -1061,7 +1110,14 @@ fn sync_from(agent: &ureq::Agent, jars: Option<&Path>, mods: &[ModRef], local: &
             std::fs::remove_file(path).with_context(|| format!("cannot delete {}", path.display()))?;
         }
     }
-    let lines: String = synced.iter().map(|(name, sha1)| format!("{name} {sha1}\n")).collect();
+    let found = list_jars(dir)?;
+    let lines: String = synced
+        .iter()
+        .map(|(name, sha1)| match found.get(name).and_then(|f| f.on.iter().chain(&f.off).find_map(|p| Stamp::of(p))) {
+            Some(Stamp { size, mtime }) => format!("{name} {sha1} {size} {mtime}\n"),
+            None => format!("{name} {sha1}\n"),
+        })
+        .collect();
     net::write_atomic(ledger, lines.as_bytes())?;
     Ok(fetched.into_iter().filter(|downloaded| *downloaded).count())
 }
@@ -1712,7 +1768,7 @@ Connection: close
         std::fs::write(cached_jar(&jars, &sha1).unwrap(), bytes).unwrap();
         let m = ModRef { project_id: "p".into(), version_id: "v".into(), title: "T".into(), file_name: "t.jar".into(), url: "http://127.0.0.1:9/t.jar".into(), sha1 };
         let (agent, lookups) = super::net::fake::agent(None, std::time::Duration::from_secs(1));
-        assert!(place(&agent, Some(&jars), &m, false, &mods).unwrap());
+        assert!(place(&agent, Some(&jars), &m, false, &mods, &HashMap::new()).unwrap());
         assert_eq!(std::fs::read(mods.join("t.jar")).unwrap(), bytes);
         assert_eq!(lookups.count(), 0);
         assert!(cached_jar(&jars, "../../evil").is_none());
@@ -2449,7 +2505,8 @@ Connection: close
         server.join().unwrap();
         assert_eq!(names(dir.path()), ["new.jar.disabled"]);
         assert_eq!(std::fs::read(dir.path().join("new.jar.disabled")).unwrap(), b"fresh");
-        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), format!("new.jar {}\n", jar("new.jar", b"fresh").sha1));
+        assert_eq!(read_ledger(&ledger).get("new.jar").map(|e| e.sha1.as_str()), Some(jar("new.jar", b"fresh").sha1.as_str()));
+        assert_eq!(read_ledger(&ledger).get("new.jar").and_then(|e| e.stamp).map(|s| s.size), Some(5));
         assert_eq!(sync_into(&agent, &list, &[], &["new.jar".into()], dir.path(), &ledger).unwrap(), 0);
     }
 
@@ -2482,7 +2539,8 @@ Connection: close
         let (_held, ledger) = ledger(&[("old.jar", &b"x"[..]), ("old2.jar", &b"x"[..]), ("OLD3.jar", &b"x"[..]), (crate::core::fleet::COMPANION_FILE, &b"x"[..])]);
         sync_into(&agent, &[jar("a.jar", b"aaa")], &[], &[], mods, &ledger).unwrap();
         assert_eq!(names(mods), ["User2.jar.disabled", "a.jar", "manycraft-companion.jar", "user.jar"]);
-        assert_eq!(std::fs::read_to_string(&ledger).unwrap(), format!("a.jar {}\n", jar("a.jar", b"aaa").sha1));
+        assert_eq!(read_ledger(&ledger).keys().collect::<Vec<_>>(), ["a.jar"]);
+        assert_eq!(read_ledger(&ledger)["a.jar"].sha1, jar("a.jar", b"aaa").sha1);
         sync_into(&agent, &[], &[], &[], mods, &ledger).unwrap();
         assert_eq!(names(mods), ["User2.jar.disabled", "manycraft-companion.jar", "user.jar"]);
     }
@@ -2511,7 +2569,7 @@ Connection: close
         std::fs::write(&path, format!("old.jar\nbad name.jar zz\nOk Name.JAR {hash}\n\n{hash}\n")).unwrap();
         let read = read_ledger(&path);
         assert_eq!(read.len(), 1);
-        assert_eq!(read.get("ok name.jar"), Some(&hash.to_lowercase()));
+        assert_eq!(read.get("ok name.jar"), Some(&Recorded { sha1: hash.to_lowercase(), stamp: None }));
         assert!(read_ledger(&dir.path().join("none")).is_empty());
         let (_held, written) = ledger(&[]);
         let agent = net::agent(None).unwrap();
@@ -2521,7 +2579,76 @@ Connection: close
         std::fs::create_dir_all(&mods).unwrap();
         std::fs::write(mods.join("Fabric-API.jar"), b"api").unwrap();
         sync_into(&agent, &[api.clone()], &[], &[], &mods, &written).unwrap();
-        assert_eq!(read_ledger(&written).get("fabric-api.jar"), Some(&jar("Fabric-API.jar", b"api").sha1));
+        assert_eq!(read_ledger(&written).get("fabric-api.jar").map(|e| &e.sha1), Some(&jar("Fabric-API.jar", b"api").sha1));
+    }
+
+    #[test]
+    fn the_ledger_reads_old_lines_and_lines_with_a_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mods.managed");
+        let (a, b) = ("ab".repeat(20), "cd".repeat(20));
+        std::fs::write(&path, format!("old.jar {a}\nSome Name.jar {b} 12 1700000000123456789\nbad.jar {a} x 5\n")).unwrap();
+        let read = read_ledger(&path);
+        assert_eq!(read.get("old.jar"), Some(&Recorded { sha1: a, stamp: None }));
+        assert_eq!(read.get("some name.jar"), Some(&Recorded { sha1: b, stamp: Some(Stamp { size: 12, mtime: 1_700_000_000_123_456_789 }) }));
+        assert_eq!(read.len(), 2);
+    }
+
+    fn stamped(dir: &Path, name: &str, written: &[u8], recorded: &ModRef) -> std::path::PathBuf {
+        let ledger = dir.join("mods.managed");
+        let mods = dir.join("mods");
+        std::fs::create_dir_all(&mods).unwrap();
+        std::fs::write(mods.join(name), written).unwrap();
+        let Stamp { size, mtime } = Stamp::of(&mods.join(name)).unwrap();
+        std::fs::write(&ledger, format!("{} {} {size} {mtime}\n", name.to_lowercase(), recorded.sha1)).unwrap();
+        ledger
+    }
+
+    #[test]
+    fn a_jar_that_matches_the_ledger_stamp_is_not_hashed_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let want = jar("a.jar", b"real");
+        let ledger = stamped(dir.path(), "a.jar", b"fake", &want);
+        let agent = net::agent(None).unwrap();
+        let mods = dir.path().join("mods");
+        assert_eq!(sync_into(&agent, &[want.clone()], &[], &[], &mods, &ledger).unwrap(), 0);
+        assert_eq!(std::fs::read(mods.join("a.jar")).unwrap(), b"fake");
+        let kept = read_ledger(&ledger);
+        assert_eq!(kept["a.jar"].stamp, Stamp::of(&mods.join("a.jar")));
+    }
+
+    #[test]
+    fn a_jar_whose_stamp_differs_from_the_ledger_is_hashed_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let want = jar("a.jar", b"real");
+        let ledger = stamped(dir.path(), "a.jar", b"real", &want);
+        let mods = dir.path().join("mods");
+        let agent = net::agent(None).unwrap();
+        let touch = |later: u64| std::fs::File::options().write(true).open(mods.join("a.jar")).unwrap().set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(later)).unwrap();
+        touch(60);
+        assert_eq!(sync_into(&agent, &[want.clone()], &[], &[], &mods, &ledger).unwrap(), 0);
+        assert_eq!(read_ledger(&ledger)["a.jar"].stamp, Stamp::of(&mods.join("a.jar")));
+        std::fs::write(mods.join("a.jar"), b"edit").unwrap();
+        touch(120);
+        let err = sync_into(&agent, &[want], &[], &[], &mods, &ledger).unwrap_err();
+        assert!(format!("{err:#}").contains("cannot download"), "{err:#}");
+    }
+
+    #[test]
+    fn a_stray_jar_is_deleted_by_stamp_and_by_hash_only_when_it_is_the_recorded_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = jar("x.jar", b"synced");
+        let ledger = stamped(dir.path(), "x.jar", b"synced", &gone);
+        let mods = dir.path().join("mods");
+        std::fs::write(mods.join("y.jar"), b"mine").unwrap();
+        let agent = net::agent(None).unwrap();
+        let managed = read_ledger(&ledger);
+        assert!(is_managed(&managed, "X.JAR", &mods.join("x.jar")));
+        assert!(!is_managed(&managed, "y.jar", &mods.join("y.jar")));
+        std::fs::write(mods.join("x.jar"), b"swapped").unwrap();
+        assert!(!is_managed(&managed, "x.jar", &mods.join("x.jar")));
+        sync_into(&agent, &[], &[], &[], &mods, &ledger).unwrap();
+        assert_eq!(names(&mods), ["x.jar", "y.jar"]);
     }
 
     #[test]

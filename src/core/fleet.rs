@@ -44,6 +44,7 @@ const RESOLVE_CACHE: Duration = Duration::from_secs(60);
 const RESOLVE_RETRY: Duration = Duration::from_secs(5);
 const DNS_ATTEMPT: Duration = Duration::from_secs(1);
 const REAP_INTERVAL: Duration = Duration::from_millis(500);
+const BOOST_LIMIT: Duration = Duration::from_secs(90);
 const EXITS_WAIT: Duration = Duration::from_secs(40);
 /// How long a stopped game may take to save and quit before it is ended.
 const STOP_GRACE: Duration = Duration::from_secs(30);
@@ -979,9 +980,27 @@ pub struct RunningInstance {
     pub started: Instant,
     exit: Option<Option<i32>>,
     logs: PathBuf,
+    boosted: Option<Instant>,
+}
+
+/// Whether a start loads with a raised priority: only a game played alone, never one of a batch, whose games stay cheap.
+fn boosted(target: &Target) -> bool {
+    target.batch.is_none()
 }
 
 impl RunningInstance {
+    fn settle(&mut self) {
+        if self.boosted.take().is_some() && self.exit.is_none() {
+            launch::settle(self.pid);
+        }
+    }
+
+    fn settle_when_due(&mut self) {
+        if self.boosted.is_some_and(|at| at.elapsed() >= BOOST_LIMIT) {
+            self.settle();
+        }
+    }
+
     fn poll(&mut self) -> bool {
         if self.exit.is_none() {
             match self.child.try_wait() {
@@ -1107,7 +1126,11 @@ impl Fleet {
                 started: Instant::now(),
                 exit: None,
                 logs: run.game_dir.join("logs"),
+                boosted: None,
             };
+            if run.batch.is_none() && !run.headless {
+                launch::settle(pid);
+            }
             self.insert(key.clone(), instance);
             if !run.headless
                 && let Ok(dir) = instance::existing(&run.instance)
@@ -1291,6 +1314,9 @@ impl Fleet {
 
     /// Frees the place of `key`, whose game reached its title screen, for the next one in line.
     pub fn loaded(&self, key: &str) {
+        if let Some(run) = lock(&self.running).get_mut(key) {
+            run.settle();
+        }
         self.line.loaded(key);
     }
 
@@ -1374,6 +1400,7 @@ impl Fleet {
             started,
             exit: None,
             logs,
+            boosted: boosted(target).then(Instant::now),
         };
         self.insert(key.clone(), instance);
         if !target.connection_only() {
@@ -1423,6 +1450,7 @@ impl Fleet {
                 let mut ended = Vec::new();
                 for (key, instance) in lock(&running).iter_mut() {
                     if instance.poll() {
+                        instance.settle_when_due();
                         alive = true;
                     } else {
                         ipc.unregister(key);
@@ -1606,6 +1634,7 @@ fn launch_one(target: &Target, account: &Account, companion_jar: Option<&Path>, 
         extra_jvm: extra.jvm,
         extra_game: extra.game,
         env: launch::SecretEnv(extra.secrets),
+        boost: boosted(target),
     };
     Ok((launch::spawn(&spec)?, vault))
 }
@@ -3006,6 +3035,7 @@ mod tests {
             extra_jvm: extra.jvm,
             extra_game: extra.game.clone(),
             env: launch::SecretEnv(extra.secrets.clone()),
+            boost: false,
         };
         let args = spec.arguments().unwrap().as_slice().to_vec();
         let everything = args.iter().chain(&extra.game).chain(extra.secrets.iter().map(|(_, v)| v)).cloned().collect::<Vec<_>>().join(" ");
