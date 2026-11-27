@@ -15,6 +15,7 @@ use self::look::LookGroup;
 use self::phone::AlertsGroup;
 use crate::app::event::Event;
 use crate::app::model::UpdateStatus;
+use crate::core::discord;
 use crate::core::i18n::{tr, trf};
 use crate::core::settings::{self, HOTKEYS, PreviewRate, Settings, WhilePlaying};
 use crate::view::kit::Bounds;
@@ -224,17 +225,17 @@ impl Component for SettingsPage {
         let sections: [Element; SECTIONS] = Section::ALL.map(|section| match section {
             Section::Look => LookGroup.into_element(),
             Section::Start => GameGroup.into_element(),
-            Section::Playing => group(
-                &t,
-                Some(section.title()),
-                vec![
+            Section::Playing => {
+                let mut rows = vec![
                     while_playing(p, s.while_playing),
                     toggle(p, "settings.reopen", tr("Danach wieder öffnen"), tr("Holt Manycraft zurück, sobald das letzte Spiel endet, das du allein gespielt hast."), s.reopen_after, |s, on| s.reopen_after = on),
                     toggle(p, "settings.badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |s, on| s.game_badge = on),
-                    toggle(p, "settings.discord", tr("Discord-Status zeigen"), tr("Zeigt in Discord, was du gerade spielst. Nur solange Spiele laufen."), s.discord_status, |s, on| s.discord_status = on),
-                ],
-                None,
-            ),
+                ];
+                if discord::available() {
+                    rows.push(toggle(p, "settings.discord", tr("Discord-Status zeigen"), tr("Zeigt in Discord, was du gerade spielst. Nur solange Spiele laufen."), s.discord_status, |s, on| s.discord_status = on));
+                }
+                group(&t, Some(section.title()), rows, None)
+            }
             Section::Always => {
                 let mut rows = vec![toggle(p, "settings.reconnect", tr("Automatisch neu verbinden"), tr("Geht nach einem Verbindungsabbruch wieder auf den Server."), s.reconnect.enabled, |s, on| s.reconnect.enabled = on)];
                 if s.reconnect.enabled {

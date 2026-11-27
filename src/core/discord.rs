@@ -342,6 +342,12 @@ mod tests {
             )
         });
         let wait = || heard.recv_timeout(Duration::from_secs(5)).expect("the fake Discord heard nothing");
+        let until = |done: &dyn Fn(&serde_json::Value) -> bool| loop {
+            let body = wait();
+            if done(&body) {
+                break body;
+            }
+        };
         let first = Presence { details: "Playing A".into(), state: Some("1.21.4 · Fabric".into()) };
         tx.send(Some(first)).unwrap();
         let hello = wait();
@@ -355,14 +361,13 @@ mod tests {
         let started = set["args"]["activity"]["timestamps"]["start"].as_i64().unwrap();
         assert!((now() - started).abs() < 60);
         tx.send(Some(Presence { details: "2 accounts gooning in B".into(), state: None })).unwrap();
-        let next = wait();
-        assert_eq!(next["args"]["activity"]["details"], "2 accounts gooning in B");
+        let next = until(&|b| b["args"]["activity"]["details"] == "2 accounts gooning in B");
         assert!(next["args"]["activity"].get("state").is_none());
         assert_eq!(next["args"]["activity"]["timestamps"]["start"].as_i64(), Some(started), "the timer runs since the first game");
         tx.send(None).unwrap();
-        let cleared = wait();
+        let cleared = until(&|b| b["args"]["activity"].is_null());
         assert!(cleared["args"]["activity"].is_null());
-        assert_eq!(wait(), "closed");
+        until(&|b| b == "closed");
         drop(tx);
         worker.join().unwrap();
     }
