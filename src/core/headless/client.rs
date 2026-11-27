@@ -481,7 +481,7 @@ fn refusal(link: &Link, text: &str) -> Option<ChatRefusal> {
     None
 }
 
-/// Tells the server which key this connection signs its chat with, if the account has one.
+/// Tells the server which key this connection signs its chat with, if it has one.
 fn start_chat_session(shared: &Shared, link: &mut Link) -> Result<()> {
     link.seen = Seen::default();
     link.signer = None;
@@ -512,6 +512,22 @@ fn renew_chat_session(link: &mut Link, certificate: Arc<ChatCertificate>) -> Res
 
 fn now_millis() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Whether the server enforces secure chat, the last field of the play Login packet. Only then does the connection open a
+/// chat session; a server that does not wants no signature, so it gets none.
+fn enforces_secure_chat(login: &In) -> bool {
+    let mut tail = login.clone();
+    let before_flag = tail.left().saturating_sub(1);
+    tail.take(before_flag).is_ok() && tail.bool().unwrap_or(false)
+}
+
+/// The key to sign with on this login: none unless the server enforces secure chat and the account has a session.
+fn login_certificate(shared: &Shared, spec: &Spec, login: &In) -> Option<Arc<ChatCertificate>> {
+    if !enforces_secure_chat(login) {
+        return None;
+    }
+    chat_certificate(shared, spec, spec.session.as_ref()?)
 }
 
 /// The account's chat key: the one kept from an earlier connection while it is current, otherwise a fresh one from Mojang.
@@ -736,7 +752,11 @@ fn join(shared: &Shared, spec: &Spec) -> Result<(Line, DisconnectCause)> {
         }
         let id = packet.id;
         let mut r = In::new(packet.body);
+        let certificate = (phase == Phase::Play && id == play::clientbound::LOGIN).then(|| login_certificate(shared, spec, &r));
         let mut link = shared.lock();
+        if let Some(certificate) = certificate {
+            link.certificate = certificate;
+        }
         let handled = match phase {
             Phase::Configuration => configuration(shared, &mut link, id, &mut r, &mut chat_types),
             _ => playing(shared, &mut link, id, &mut r, &chat_types),
@@ -819,10 +839,6 @@ fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(L
                     link.writer.as_mut().context("not connected")?.encrypt(&secret);
                 }
                 reader.encrypt(&secret);
-                if let (true, Some(session)) = (verified, &spec.session) {
-                    let certificate = chat_certificate(shared, spec, session);
-                    shared.lock().certificate = certificate;
-                }
             }
             c::LOGIN_COMPRESSION => {
                 let threshold = usize::try_from(r.varint()?).ok();
@@ -1343,9 +1359,12 @@ mod tests {
     use super::super::signing::test_certificate;
     use super::*;
 
+    fn spec() -> Spec {
+        Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, account: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() }
+    }
+
     fn shared() -> Shared {
-        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, account: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
-        Shared::new(&spec, std::sync::mpsc::channel().0)
+        Shared::new(&spec(), std::sync::mpsc::channel().0)
     }
 
     fn noise(seed: &mut u64, len: usize) -> Vec<u8> {
@@ -1431,13 +1450,19 @@ mod tests {
         Some((id, packet[used..].to_vec()))
     }
 
-    fn playing_with_a_key(shared: &Shared, certificate: ChatCertificate) -> std::net::TcpStream {
+    fn connected(shared: &Shared) -> std::net::TcpStream {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
         let mut link = shared.lock();
         link.writer = Some(Writer::new(client));
         link.phase = Phase::Play;
+        server
+    }
+
+    fn playing_with_a_key(shared: &Shared, certificate: ChatCertificate) -> std::net::TcpStream {
+        let server = connected(shared);
+        let mut link = shared.lock();
         let certificate = Arc::new(certificate);
         link.signer = Some(Signer::new(&certificate, link.me).unwrap());
         link.certificate = Some(certificate);
@@ -1502,6 +1527,61 @@ mod tests {
         });
         assert!(sent.is_none());
         assert_eq!(old, shared.lock().signer.as_ref().unwrap().announcement().0);
+    }
+
+    fn login_ending_in(flag: bool) -> Vec<u8> {
+        let mut body = vec![0u8, 1, 0, 3, 15, 0, 0, 1, 2, 3, 4];
+        body.extend([0, u8::from(flag)]);
+        body
+    }
+
+    fn account_with_a_kept_key() -> (Spec, Shared) {
+        let mut spec = spec();
+        spec.session = Some(Session { name: "Dev".into(), uuid: Uuid::nil(), access_token: "unused".into(), xuid: String::new(), expires_at: SystemTime::now() + Duration::from_secs(3600) });
+        let shared = Shared::new(&spec, std::sync::mpsc::channel().0);
+        *shared.certificate.lock().unwrap() = Some(Arc::new(test_certificate(9, now_millis() + 3_600_000, now_millis() + 7_200_000)));
+        (spec, shared)
+    }
+
+    #[test]
+    fn the_flag_is_the_last_byte_of_the_login_packet() {
+        assert!(enforces_secure_chat(&In::new(&login_ending_in(true))));
+        assert!(!enforces_secure_chat(&In::new(&login_ending_in(false))));
+        assert!(!enforces_secure_chat(&In::new(&[])));
+    }
+
+    #[test]
+    fn a_server_that_enforces_secure_chat_gets_a_chat_session_announced() {
+        let (spec, shared) = account_with_a_kept_key();
+        let mut server = connected(&shared);
+        server.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let body = login_ending_in(true);
+        let mut link = shared.lock();
+        link.certificate = login_certificate(&shared, &spec, &In::new(&body));
+        assert!(link.certificate.is_some());
+        start_chat_session(&shared, &mut link).unwrap();
+        let (id, sent) = frame(&mut server).expect("a session update");
+        assert_eq!(id, play::serverbound::CHAT_SESSION_UPDATE);
+        assert_eq!(sent, link.signer.as_ref().unwrap().announcement().0);
+    }
+
+    #[test]
+    fn a_server_that_does_not_enforce_it_gets_no_session_no_key_and_no_signature() {
+        let (spec, shared) = account_with_a_kept_key();
+        let mut server = connected(&shared);
+        server.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let body = login_ending_in(false);
+        let mut link = shared.lock();
+        link.certificate = login_certificate(&shared, &spec, &In::new(&body));
+        assert!(link.certificate.is_none());
+        start_chat_session(&shared, &mut link).unwrap();
+        assert!(link.signer.is_none());
+        assert!(frame(&mut server).is_none(), "nothing is sent");
+        link.lines = Queue::new(Instant::now());
+        chat(&mut link, "hello").unwrap();
+        let (id, sent) = frame(&mut server).expect("the chat line");
+        assert_eq!(id, play::serverbound::CHAT);
+        assert_eq!(sent.last().copied(), Some(1), "an unsigned message acknowledges nothing and carries no signature");
     }
 
     #[test]

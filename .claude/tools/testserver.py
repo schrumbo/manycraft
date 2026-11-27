@@ -88,6 +88,8 @@ def write_config(folder, port):
     }
     if os.environ.get("MANYCRAFT_TESTSERVER_CONDUCT"):
         props["enable-code-of-conduct"] = "true"
+    if os.environ.get("MANYCRAFT_TESTSERVER_INSECURE"):
+        props["enforce-secure-profile"] = "false"
     if os.environ.get("MANYCRAFT_TESTSERVER_PACK"):
         props["resource-pack"] = os.environ["MANYCRAFT_TESTSERVER_PACK"]
         props["require-resource-pack"] = "true"
