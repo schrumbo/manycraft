@@ -319,7 +319,8 @@ fn refresh(game_version: &str, loader: &Loader) -> Result<()> {
     let (versions, libraries) = (root.join("versions"), root.join("libraries"));
     let plan = fetch_plan(&dl, &net::agent_within(QUICK_METADATA), &versions, &libraries, game_version, loader)?;
     let written = join_safe(&versions, &plan.profile.id)?.join(format!("{}.json", plan.profile.id));
-    if std::fs::read(&written).ok().as_deref() != Some(serde_json::to_vec(&plan.profile)?.as_slice()) {
+    let on_disk = std::fs::read(&written).ok().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    if on_disk != Some(serde_json::to_value(&plan.profile)?) {
         let profile = plan.profile.clone();
         fulfil(&root, &dl, plan, game_version, &|_| {})?;
         net::write_atomic(&written, &serde_json::to_vec(&profile)?)?;
