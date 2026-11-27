@@ -59,6 +59,8 @@ pub struct LaunchSpec {
     pub extra_jvm: Vec<String>,
     pub extra_game: Vec<String>,
     pub env: SecretEnv,
+    /// Windows: start above normal priority so the game loads faster; `settle` takes it back. Ignored elsewhere.
+    pub boost: bool,
 }
 
 /// Environment variables for the game process. Debug output shows only the names.
@@ -231,7 +233,30 @@ pub fn spawn(spec: &LaunchSpec) -> Result<Child> {
     let log_err = log.try_clone().context("cannot write the launch log")?;
     let mut command = spec.command()?;
     command.stdin(Stdio::null()).stdout(log).stderr(log_err);
+    #[cfg(windows)]
+    if spec.boost {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::ABOVE_NORMAL_PRIORITY_CLASS);
+    }
     command.spawn().with_context(|| format!("cannot start {}", spec.installed.java.display()))
+}
+
+/// Gives a game started with `LaunchSpec::boost` the normal priority back. Does nothing off Windows or when the process is gone.
+pub fn settle(pid: u32) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{NORMAL_PRIORITY_CLASS, OpenProcess, PROCESS_SET_INFORMATION, SetPriorityClass};
+        unsafe {
+            let handle = OpenProcess(PROCESS_SET_INFORMATION, 0, pid);
+            if !handle.is_null() {
+                SetPriorityClass(handle, NORMAL_PRIORITY_CLASS);
+                CloseHandle(handle);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
 }
 
 /// `manycraft launch`: installs and starts a version from the terminal.
@@ -321,6 +346,7 @@ fn run(args: &[String]) -> Result<i32> {
         extra_jvm: Vec::new(),
         extra_game: Vec::new(),
         env: SecretEnv::default(),
+        boost: false,
     };
     let mut child = spawn(&spec)?;
     println!("started {} in {} (log: logs/manycraft-launch.log)", spec.installed.id, game_dir.display());
@@ -402,6 +428,7 @@ mod tests {
             extra_jvm: vec!["-Dextra=1".into()],
             extra_game: vec!["--extra".into()],
             env: SecretEnv(vec![("MANYCRAFT_TOKEN".into(), TOKEN.into())]),
+            boost: false,
         }
     }
 

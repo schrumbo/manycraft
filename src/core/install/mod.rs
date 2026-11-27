@@ -291,13 +291,41 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 }
 
 /// Installs `game_version` with `loader` (its pinned version, or the newest stable one) into the shared folders.
-/// Files that are already there are not downloaded again. A version that was installed before starts without asking
-/// the network while the connection is known to be gone, and asks it only briefly otherwise.
+/// Files that are already there are not downloaded again. A version that was installed before starts from what is on
+/// disk without asking the network; its metadata is refreshed in the background for the next start.
 pub fn install(game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {
     let _in_use = clean::in_use()?;
     let root = paths::data_dir();
     let dl = Downloader::new(net::agent(None)?)?.seeded(seed::Seeds::new(&root, seed::launchers()));
-    install_in(&root, &dl, &net::agent_within(QUICK_METADATA), online::offline(), game_version, loader, progress)
+    install_in(&root, &dl, online::offline(), game_version, loader, progress, &|| refresh_later(game_version, loader))
+}
+
+fn refresh_later(game_version: &str, loader: &Loader) {
+    if id_prefix(loader).is_none() {
+        return;
+    }
+    let (game_version, loader) = (game_version.to_owned(), loader.clone());
+    let _ = std::thread::Builder::new().name("refresh-install-plan".into()).spawn(move || {
+        let _ = refresh(&game_version, &loader);
+    });
+}
+
+/// Fetches the plan the network offers and, when it differs from the one on disk, installs it completely before it is
+/// written, so the newest profile on disk is never one whose files are missing.
+fn refresh(game_version: &str, loader: &Loader) -> Result<()> {
+    let _in_use = clean::in_use()?;
+    let root = paths::data_dir();
+    let dl = Downloader::new(net::agent(None)?)?.seeded(seed::Seeds::new(&root, seed::launchers()));
+    let (versions, libraries) = (root.join("versions"), root.join("libraries"));
+    let plan = fetch_plan(&dl, &net::agent_within(QUICK_METADATA), &versions, &libraries, game_version, loader)?;
+    let written = join_safe(&versions, &plan.profile.id)?.join(format!("{}.json", plan.profile.id));
+    let on_disk = std::fs::read(&written).ok().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    if on_disk != Some(serde_json::to_value(&plan.profile)?) {
+        let profile = plan.profile.clone();
+        fulfil(&root, &dl, plan, game_version, &|_| {})?;
+        net::write_atomic(&written, &serde_json::to_vec(&profile)?)?;
+    }
+    Ok(())
 }
 
 /// Hands `read` the client jar of `game_version` in the shared versions folder, fetched with its metadata when it is
@@ -320,18 +348,27 @@ pub fn with_client_jar<T>(game_version: &str, read: impl FnOnce(&Path) -> Result
     read(&jar)
 }
 
-fn install_in(root: &Path, dl: &Downloader, quick: &ureq::Agent, offline: bool, game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {
-    let (versions, libraries, assets_dir, runtimes) = (root.join("versions"), root.join("libraries"), root.join("assets"), root.join("runtimes"));
+/// Installs from the local plan when one is complete, calling `refresh` when the network is not known to be gone so
+/// the caller can update the metadata for the next start; otherwise asks the network for the plan.
+fn install_in(root: &Path, dl: &Downloader, offline: bool, game_version: &str, loader: &Loader, progress: &(dyn Fn(Progress) + Sync), refresh: &dyn Fn()) -> Result<Installed> {
+    let (versions, libraries, runtimes) = (root.join("versions"), root.join("libraries"), root.join("runtimes"));
     progress(Progress { stage: Stage::Metadata, done: 0, total: 1 });
     let local = local_plan(&versions, &libraries, game_version, loader).filter(|plan| java::local(&runtimes, component(&plan.profile)).is_some());
     let plan = match local {
-        Some(plan) if offline => plan,
-        local => match online_plan(dl, if local.is_some() { quick } else { dl.agent() }, &versions, &libraries, game_version, loader) {
-            Ok(plan) => plan,
-            Err(online) => local.ok_or(online)?,
-        },
+        Some(plan) => {
+            if !offline {
+                refresh();
+            }
+            plan
+        }
+        None => online_plan(dl, dl.agent(), &versions, &libraries, game_version, loader)?,
     };
     progress(Progress { stage: Stage::Metadata, done: 1, total: 1 });
+    fulfil(root, dl, plan, game_version, progress)
+}
+
+fn fulfil(root: &Path, dl: &Downloader, plan: Plan, game_version: &str, progress: &(dyn Fn(Progress) + Sync)) -> Result<Installed> {
+    let (versions, libraries, assets_dir, runtimes) = (root.join("versions"), root.join("libraries"), root.join("assets"), root.join("runtimes"));
     let Plan { profile, loader: loader_version, runtime, installer } = plan;
     let id = profile.id.clone();
     let version_dir = join_safe(&versions, &id)?;
@@ -428,6 +465,15 @@ fn component(profile: &VersionJson) -> &str {
 }
 
 fn online_plan(dl: &Downloader, meta: &ureq::Agent, versions: &Path, libraries: &Path, game_version: &str, loader: &Loader) -> Result<Plan> {
+    let plan = fetch_plan(dl, meta, versions, libraries, game_version, loader)?;
+    if id_prefix(loader).is_some() {
+        let path = join_safe(versions, &plan.profile.id)?.join(format!("{}.json", plan.profile.id));
+        net::write_atomic(&path, &serde_json::to_vec(&plan.profile)?)?;
+    }
+    Ok(plan)
+}
+
+fn fetch_plan(dl: &Downloader, meta: &ureq::Agent, versions: &Path, libraries: &Path, game_version: &str, loader: &Loader) -> Result<Plan> {
     let (vanilla, loaded, runtimes) = std::thread::scope(|s| {
         let runtimes = s.spawn(|| java::index(meta));
         let loaded = s.spawn(|| loader_profile(dl, meta, libraries, game_version, loader));
@@ -442,10 +488,6 @@ fn online_plan(dl: &Downloader, meta: &ureq::Agent, versions: &Path, libraries: 
     };
     profile.id = version_id(loader, game_version, &version);
     let runtime = java::pick(&runtimes?, component(&profile))?;
-    if id_prefix(loader).is_some() {
-        let path = join_safe(versions, &profile.id)?.join(format!("{}.json", profile.id));
-        net::write_atomic(&path, &serde_json::to_vec(&profile)?)?;
-    }
     Ok(Plan { profile, loader: version, runtime: Some(runtime), installer })
 }
 
@@ -607,12 +649,12 @@ mod tests {
         dir
     }
 
-    fn offline_install(root: &Path, offline: bool, loader: Option<&str>) -> (Result<Installed>, usize, usize) {
+    fn offline_install(root: &Path, offline: bool, loader: Option<&str>) -> (Result<Installed>, usize, Vec<String>) {
         let (agent, downloads) = net::fake::agent(None, Duration::from_secs(5));
-        let (quick, metadata) = net::fake::agent(None, Duration::from_secs(5));
         let dl = Downloader::new(agent).unwrap();
-        let result = install_in(root, &dl, &quick, offline, "26.3", &fabric(loader), &|_| {});
-        (result, downloads.count(), metadata.count())
+        let refreshed = std::sync::Mutex::new(Vec::new());
+        let result = install_in(root, &dl, offline, "26.3", &fabric(loader), &|_| {}, &|| refreshed.lock().unwrap().push(String::new()));
+        (result, downloads.count(), refreshed.into_inner().unwrap())
     }
 
     #[test]
@@ -635,20 +677,28 @@ mod tests {
     fn a_cached_version_starts_offline_without_a_single_request() {
         let root = cached_root();
         for loader in [Some("0.20.1"), None] {
-            let (installed, downloads, metadata) = offline_install(root.path(), true, loader);
+            let (installed, downloads, refreshed) = offline_install(root.path(), true, loader);
             let installed = installed.unwrap();
-            assert_eq!((downloads, metadata), (0, 0));
+            assert_eq!((downloads, refreshed.len()), (0, 0));
             assert_eq!((installed.loader_version.as_str(), installed.downloaded), ("0.20.1", 0));
             assert!(installed.java.ends_with(java::executable(meta::Os::current())));
         }
     }
 
     #[test]
-    fn a_cached_version_falls_back_after_one_round_of_quick_failed_requests() {
+    fn a_cached_version_starts_from_disk_without_waiting_for_the_network_and_asks_for_a_refresh() {
         let root = cached_root();
-        let (installed, downloads, metadata) = offline_install(root.path(), false, Some("0.20.1"));
+        let (installed, downloads, refreshed) = offline_install(root.path(), false, Some("0.20.1"));
         assert_eq!(installed.unwrap().loader_version, "0.20.1");
-        assert_eq!((downloads, metadata), (0, 3));
+        assert_eq!((downloads, refreshed.len()), (0, 1));
+    }
+
+    #[test]
+    fn a_first_install_asks_the_network_for_its_plan_and_never_refreshes() {
+        let root = tempfile::tempdir().unwrap();
+        let (installed, _, refreshed) = offline_install(root.path(), false, Some("0.20.1"));
+        assert!(installed.is_err());
+        assert!(refreshed.is_empty());
     }
 
     #[test]
@@ -663,9 +713,9 @@ mod tests {
     fn a_cached_version_with_a_missing_runtime_asks_the_network() {
         let root = cached_root();
         std::fs::remove_file(root.path().join("runtimes/comp/abc/.complete")).unwrap();
-        let (installed, downloads, metadata) = offline_install(root.path(), true, Some("0.20.1"));
+        let (installed, downloads, refreshed) = offline_install(root.path(), true, Some("0.20.1"));
         assert!(net::no_connection(&installed.unwrap_err()));
-        assert_eq!((downloads, metadata), (3, 0));
+        assert_eq!((downloads, refreshed.len()), (3, 0));
     }
 
     #[test]
