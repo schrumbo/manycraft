@@ -7,7 +7,7 @@ use super::super::effect::{Effect, Redraw};
 use super::super::event::Event;
 use super::super::model::{Model, Phase};
 use super::super::phase::Why;
-use super::go;
+use super::{go, said};
 use crate::core::account::Account;
 use crate::core::fleet::Target;
 use crate::core::fit::{self, Memory};
@@ -369,6 +369,7 @@ pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>)
         if m.games.get(key).is_some_and(|i| i.stopping) {
             continue;
         }
+        said::clear(m, key);
         let s = &mut m.session;
         s.reconnects.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
         s.joins.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
@@ -376,6 +377,7 @@ pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>)
         s.sign_in_rounds.remove(key);
         s.joined.remove(key);
         s.held_joins.remove(key);
+        s.join_pending.remove(key);
         s.phone.forget(key);
         let has_pid = s.pids.contains_key(key);
         let Some(i) = m.games.get_mut(key) else { continue };

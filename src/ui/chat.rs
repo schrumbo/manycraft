@@ -13,7 +13,7 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::actions::{Broadcast, OpenSettings, SendChat};
+use super::actions::{OpenSettings, SendChat, SendChatMany};
 use super::drive::Mark;
 use super::main_window::{self, MainWindow, Page};
 use super::model::{self, ChatLine, Model};
@@ -323,7 +323,10 @@ impl ChatPage {
         }
         let Some(target) = self.target.clone() else { return };
         match target {
-            Target::Batch(batch) => window.dispatch_action(Box::new(Broadcast { batch, text: text.clone() }), cx),
+            Target::Batch(batch) => {
+                let keys = model.read(cx).games.values().filter(|g| g.batch_id == batch && g.phase != crate::app::model::Phase::Stopped).map(|g| g.key.clone()).collect();
+                window.dispatch_action(Box::new(SendChatMany { keys, text: text.clone() }), cx);
+            }
             Target::Instance(key) => window.dispatch_action(Box::new(SendChat { key, text: text.clone() }), cx),
         }
         if self.history.last() != Some(&text) {

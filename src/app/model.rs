@@ -102,6 +102,14 @@ impl Phase {
         self.on_server() || matches!(self, Phase::Dead { server: Some(_), .. })
     }
 
+    /// Whether a game that is not on a server is on its way to one by itself, so a chat line can wait for it.
+    pub fn chat_follows(&self) -> bool {
+        matches!(
+            self,
+            Phase::Starting { .. } | Phase::Menu | Phase::Connecting { .. } | Phase::NetworkLost { .. } | Phase::ServerAway { .. } | Phase::Offer { .. } | Phase::Restarting { .. } | Phase::NoNetwork
+        )
+    }
+
     /// Whether the game waits in line for its turn to start and has no process yet.
     pub fn waiting(&self) -> bool {
         matches!(self, Phase::Starting { place, .. } if *place > 0)
@@ -406,6 +414,8 @@ pub enum Delivery {
     Sent,
     /// Handed to a game that cannot say whether it went out.
     Unconfirmed,
+    /// The account is not on a server yet; the line waits for it and goes out once it is.
+    Held,
     Refused(ChatRefusal),
 }
 
@@ -438,13 +448,15 @@ impl Said {
         self.rows.iter().filter_map(|r| if let Delivery::Refused(why) = r.delivery { Some((r.name.as_str(), why)) } else { None })
     }
 
-    pub(super) fn settle(&mut self, key: &str, id: u64, outcome: ChatOutcome) {
-        let Some(row) = self.rows.iter_mut().find(|r| r.id == id && r.key == key) else { return };
-        row.delivery = match outcome {
-            ChatOutcome::Sent => Delivery::Sent,
-            ChatOutcome::Unconfirmed => Delivery::Unconfirmed,
-            ChatOutcome::Refused(why) => Delivery::Refused(why),
-        };
+    /// How many accounts still wait to get on a server before the line goes out to them.
+    pub fn held(&self) -> usize {
+        self.rows.iter().filter(|r| r.delivery == Delivery::Held).count()
+    }
+
+    pub(super) fn set(&mut self, key: &str, id: u64, delivery: Delivery) {
+        if let Some(row) = self.rows.iter_mut().find(|r| r.id == id && r.key == key) {
+            row.delivery = delivery;
+        }
     }
 }
 
@@ -546,7 +558,7 @@ impl Model {
             n.force += usize::from(i.stopping && i.overdue && i.phase.stoppable());
             n.restart += usize::from(fresh && i.phase != Phase::LoginNeeded);
             n.reconnect += usize::from(fresh && i.phase.reconnectable());
-            n.message += usize::from(i.phase.can_chat());
+            n.message += usize::from(i.phase.can_chat() || i.phase.chat_follows());
         }
         n
     }

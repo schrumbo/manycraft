@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::actions::{TakeOver, Broadcast, CancelStart, CloneInstance, NextAttention, NextInstance, OpenChat, OpenFromTray, Play, PlayInstance, PreviousInstance, Quit, QuitAll, Reconnect, ReconnectMany, Reload, Respawn, RespawnMany, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartAnyway, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
+use super::actions::{TakeOver, CancelStart, CloneInstance, NextAttention, NextInstance, OpenChat, OpenFromTray, Play, PlayInstance, PreviousInstance, Quit, QuitAll, Reconnect, ReconnectMany, Reload, Respawn, RespawnMany, RestartMany, SendChat, SendChatMany, SetColor, ShowGrid, Start, StartAll, StartAnyway, StartBatch, StartMany, Stop, StopAll, StopBatch, StopMany};
 use super::model::{self, Game, Model, Phase};
 use super::native;
 use crate::app::effect::{Effect, Redraw, Unshown};
@@ -162,18 +162,13 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &NextAttention, cx| cx.defer(|cx| dispatch(AppEvent::Step(HotkeyAction::NextAttention), cx)));
     cx.on_action(|_: &Reload, cx| reload(cx));
     cx.on_action(|_: &OpenChat, cx| cx.defer(super::chat::open));
-    cx.on_action(|a: &Broadcast, cx| dispatch(AppEvent::Broadcast { batch: a.batch.clone(), text: a.text.clone() }, cx));
     cx.on_action(|a: &SendChat, cx| dispatch(AppEvent::SendChat { key: a.key.clone(), text: a.text.clone() }, cx));
     cx.on_action(|a: &StartMany, cx| dispatch(AppEvent::StartMany(a.0.clone()), cx));
     cx.on_action(|a: &StopMany, cx| dispatch(AppEvent::Stop(a.0.clone()), cx));
     cx.on_action(|a: &RestartMany, cx| dispatch(AppEvent::Restart(a.0.clone()), cx));
     cx.on_action(|a: &ReconnectMany, cx| dispatch(AppEvent::ReconnectMany(a.0.clone()), cx));
     cx.on_action(|a: &SetColor, cx| set_color(a, cx));
-    cx.on_action(|a: &SendChatMany, cx| {
-        for key in &a.keys {
-            dispatch(AppEvent::SendChat { key: key.clone(), text: a.text.clone() }, cx);
-        }
-    });
+    cx.on_action(|a: &SendChatMany, cx| dispatch(AppEvent::Say { keys: a.keys.clone(), text: a.text.clone() }, cx));
     cx.on_system_notification_response(|response, cx| {
         let tag = response.tag.to_string();
         cx.defer(move |cx| notification_clicked(&tag, cx));

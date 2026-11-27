@@ -1705,7 +1705,6 @@
   "Account oder Batch suchen": "Search accounts or batches",
   "An alle senden": "Send to Everyone",
   "Beim Betreten sendet jeder Account: %@": "On joining, every account sends: %@",
-  "Dort ist gerade niemand im Spiel.": "Nobody there is in the game right now.",
   "Senden als": "Send as",
   "Senden als · Enter wählt · Esc schließt": "Send as · Enter picks · Esc closes",
   "Senden als …": "Send As…",
@@ -2435,5 +2434,11 @@
   "Arbeitsspeicher beim Start": "Memory at start",
   "Schickt Discord, Telegram oder ntfy eine Nachricht, gesammelt pro Batch. Unabhängig vom Schalter „Auf diesem Computer“.": "Sends a message through Discord, Telegram or ntfy, grouped per batch. Works whether or not “On this computer” is on.",
   "Anmeldung gestört · neuer Versuch gleich (%lld von %lld)": "Sign-in disrupted · trying again shortly (%lld of %lld)",
-  "Anmeldung gestört": "Sign-in disrupted"
+  "Anmeldung gestört": "Sign-in disrupted",
+  "1 wartet auf den Server": "1 waiting for the server",
+  "%lld warten auf den Server": "%lld waiting for the server",
+  "läuft nicht": "isn’t running",
+  "zu spät, nicht mehr gesendet": "too late, not sent anymore",
+  "Dort läuft gerade kein Account.": "No account is running there.",
+  "noch eine Nachricht…": "another message…"
 }
