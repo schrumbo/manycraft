@@ -188,6 +188,18 @@ impl Runtime {
                     }
                 });
             }
+            Effect::SavePlaytime { seen, wait } => {
+                let save = move || {
+                    if let Err(e) = crate::core::playtime::save(&seen) {
+                        eprintln!("playtime: {e:#}");
+                    }
+                };
+                if wait {
+                    save();
+                } else {
+                    std::thread::spawn(save);
+                }
+            }
             Effect::Trace(text) => drive::note(text),
             Effect::Log(text) => eprintln!("{text}"),
             other => return Some(other),
@@ -312,12 +324,13 @@ pub struct Data {
     pub problems: Vec<String>,
     pub recovered: Option<String>,
     pub measured: HashMap<String, u32>,
+    pub playtime: HashMap<String, u64>,
 }
 
 impl Data {
     /// The load event, keeping the message already shown when `keep`, with the games an earlier manager left running.
     pub fn loaded(self, keep: bool, adopted: Vec<Adoption>) -> Loaded {
-        Loaded { data: self.data, logs: self.logs, problems: self.problems, recovered: self.recovered, keep, adopted, resume: Vec::new(), measured: self.measured }
+        Loaded { data: self.data, logs: self.logs, problems: self.problems, recovered: self.recovered, keep, adopted, resume: Vec::new(), measured: self.measured, playtime: self.playtime }
     }
 }
 
@@ -333,7 +346,7 @@ pub fn read_data() -> Data {
         (Ok(accounts), Ok((batches, instances))) => Ok((accounts, batches, instances)),
         (Err(e), _) | (_, Err(e)) => Err(untouched(&e).unwrap_or_else(|| format!("{e:#}"))),
     };
-    Data { data, logs, problems: moved.problems, recovered: recovered_notice(&store::take_recovered()), measured: crate::core::measured::load() }
+    Data { data, logs, problems: moved.problems, recovered: recovered_notice(&store::take_recovered()), measured: crate::core::measured::load(), playtime: crate::core::playtime::load() }
 }
 
 /// The plain German for a file of Manycraft that a newer version or a hand edit left in a shape this version cannot read.

@@ -17,10 +17,10 @@ use crate::view::store::{Store, use_store};
 use crate::view::theme::{frame, iconsize, space};
 use crate::view::ui::Page;
 
-fn items(store: Store) -> Vec<Item> {
+fn items(store: Store) -> (Vec<Item>, Vec<Item>) {
     let m = store.model.peek();
     let active = crate::app::reduce::active_account(&m);
-    let mut items: Vec<Item> = m
+    let items: Vec<Item> = m
         .accounts
         .iter()
         .map(|a| {
@@ -37,27 +37,23 @@ fn items(store: Store) -> Vec<Item> {
             if expired { item.warn() } else { item }
         })
         .collect();
-    if !items.is_empty() {
-        items.push(Item::Separator);
-    }
-    items.push(
+    let mut footer = vec![
         Item::new("account.switch.add", tr("Account hinzufügen…"), move |_| {
             want(store, Want::AddAccount);
         })
         .glyph(Icon::UserPlus)
         .disabled(!can_want(&Want::AddAccount)),
-    );
+    ];
     let mut page = store.ui.page;
-    items.push(Item::new("account.switch.wardrobe", tr("Garderobe"), move |_| page.set(Page::Wardrobe)).glyph(Icon::Shirt));
-    items.push(Item::new("account.switch.manage", tr("Accounts verwalten…"), move |_| page.set(Page::ACCOUNTS)).glyph(Icon::Users));
-    items
+    footer.push(Item::new("account.switch.manage", tr("Accounts verwalten…"), move |_| page.set(Page::ACCOUNTS)).glyph(Icon::Users));
+    (items, footer)
 }
 
 /// Opens the account switcher above `anchor` when it sits in the lower half of the window, under it otherwise.
 pub fn open(store: Store, anchor: Bounds) {
     let low = anchor.y > store.ui.window.peek().1 / 2.;
-    let items = items(store);
-    menu::open(store.ui, if low { Menu::above(items, anchor) } else { Menu::under(items, anchor) });
+    let (items, footer) = items(store);
+    menu::open(store.ui, if low { Menu::above(items, anchor) } else { Menu::under(items, anchor) }.pinned(footer));
 }
 
 /// Opens the account switcher where the sidebar or its drawer shows the active account, or under the toolbar while

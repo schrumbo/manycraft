@@ -134,6 +134,8 @@ pub struct Menu {
     pub width: f32,
     /// The placeholder of the filter field, for lists long enough to need one.
     pub search: Option<String>,
+    /// Entries pinned under the list, which never scroll away; the list takes all the room the window gives it.
+    pub footer: Vec<Item>,
     /// Opens over its control with the checked entry on it, like a pop-up button's menu.
     pop: bool,
     /// Opens above the point it was given instead of below it, for controls at the bottom edge of the window.
@@ -148,17 +150,17 @@ pub struct Menu {
 impl Menu {
     /// A menu at the pointer.
     pub fn at(items: Vec<Item>, at: (f32, f32)) -> Self {
-        Self { items, at, width: frame::MENU, search: None, pop: false, up: false, drag: false, edge: None, serial: 0 }
+        Self { items, at, width: frame::MENU, search: None, footer: Vec::new(), pop: false, up: false, drag: false, edge: None, serial: 0 }
     }
 
     /// A menu that drops from `anchor`, as wide as it.
     pub fn under(items: Vec<Item>, anchor: Bounds) -> Self {
-        Self { items, at: (anchor.x, anchor.y + anchor.h + space::XS), width: anchor.w.max(frame::MENU * 0.6), search: None, pop: false, up: false, drag: false, edge: Some(anchor.x + anchor.w), serial: 0 }
+        Self { items, at: (anchor.x, anchor.y + anchor.h + space::XS), width: anchor.w.max(frame::MENU * 0.6), search: None, footer: Vec::new(), pop: false, up: false, drag: false, edge: Some(anchor.x + anchor.w), serial: 0 }
     }
 
     /// A menu that rises from the top of `anchor`, at least as wide as the roomy entries need.
     pub fn above(items: Vec<Item>, anchor: Bounds) -> Self {
-        Self { items, at: (anchor.x, anchor.y - space::XS), width: anchor.w.max(ROOMY_WIDTH), search: None, pop: false, up: true, drag: false, edge: Some(anchor.x + anchor.w), serial: 0 }
+        Self { items, at: (anchor.x, anchor.y - space::XS), width: anchor.w.max(ROOMY_WIDTH), search: None, footer: Vec::new(), pop: false, up: true, drag: false, edge: Some(anchor.x + anchor.w), serial: 0 }
     }
 
     /// A menu that opens over `anchor`: its checked entry covers the control and its text starts where the control's
@@ -167,13 +169,19 @@ impl Menu {
         let lead = LEAD - inset;
         let row = items.iter().position(|i| matches!(i, Item::Action { checked: true, .. })).map_or(0., |i| top(&items, i));
         let y = anchor.y + (anchor.h - frame::MENU_ROW) / 2. - space::XS - row;
-        Self { items, at: (anchor.x - lead, y), width: anchor.w + lead, search: None, pop: true, up: false, drag: false, edge: None, serial: 0 }
+        Self { items, at: (anchor.x - lead, y), width: anchor.w + lead, search: None, footer: Vec::new(), pop: true, up: false, drag: false, edge: None, serial: 0 }
     }
 
     /// Lets the entry under the pointer be chosen by letting go of the mouse button that opened the menu, once the pointer
     /// moved to another entry or the button was held a moment.
     pub fn dragged(mut self) -> Self {
         self.drag = true;
+        self
+    }
+
+    /// Pins `items` under the list. The menu then grows with its list up to the edge of the window, and only the list scrolls.
+    pub fn pinned(mut self, items: Vec<Item>) -> Self {
+        self.footer = items;
         self
     }
 
@@ -324,7 +332,13 @@ impl Component for Panel {
             AnimNum::new(0., 1.).duration(motion::timed(motion::FAST)).ease(Ease::Out)
         });
         let (w, h) = *ui.window.read();
-        let list_max = (frame::MENU_ROW * frame::MENU_ROWS as f32).min(h * 0.6);
+        let footer_h = if menu.footer.is_empty() { 0. } else { menu.footer.iter().map(height).sum::<f32>() + space::XS * 2. + 1. };
+        let list_max = if menu.footer.is_empty() {
+            (frame::MENU_ROW * frame::MENU_ROWS as f32).min(h * 0.6)
+        } else {
+            let room = if menu.up { menu.at.1 - frame::CHROME } else { h - menu.at.1 } - space::S - space::XS * 2. - footer_h - if menu.search.is_some() { control::M + space::XS } else { 0. };
+            room.max(frame::MENU_ROW)
+        };
         let lead = checked.is_some();
         let start = checked.map_or(0., |i| (top(&menu.items, i) - list_max / 2. + frame::MENU_ROW / 2.).max(0.));
         let scroll = use_hook(|| ScrollController::new(0, -(start as i32)));
@@ -335,8 +349,10 @@ impl Component for Panel {
                 scroll.scroll_to_y(0);
             }
         });
-        let items = filtered(&menu.items, &q);
+        let mut items = filtered(&menu.items, &q);
         let none_found = !q.trim().is_empty() && items.iter().all(|i| kept(i) || matches!(i, Item::Separator));
+        let body_len = items.len();
+        items.extend(menu.footer.iter().cloned());
         let chosen = match &*hot.read() {
             (at, i) if *at == q => *i,
             _ if q.trim().is_empty() => None,
@@ -344,11 +360,11 @@ impl Component for Panel {
         };
         let searching = menu.search.is_some();
         let field_h = if searching { control::M + space::XS } else { 0. };
-        let rows = items.iter().map(height).sum::<f32>() + if none_found { frame::MENU_ROW } else { 0. };
+        let rows = items[..body_len].iter().map(height).sum::<f32>() + if none_found { frame::MENU_ROW } else { 0. };
         let list_h = rows.min(list_max);
-        let panel_h = list_h + field_h + space::XS * 2.;
-        let tallest = menu.items.iter().map(height).sum::<f32>().min(list_max) + field_h + space::XS * 2.;
-        let fit = menu.items.iter().map(|i| fits(i, lead)).fold(0., f32::max) + space::XS * 2. + 2.;
+        let panel_h = list_h + footer_h + field_h + space::XS * 2.;
+        let tallest = menu.items.iter().map(height).sum::<f32>().min(list_max) + footer_h + field_h + space::XS * 2.;
+        let fit = menu.items.iter().chain(&menu.footer).map(|i| fits(i, lead)).fold(0., f32::max) + space::XS * 2. + 2.;
         let width = menu.width.max(fit).min(w - space::S * 2.);
         let x = match menu.edge {
             Some(edge) if menu.at.0 + width > w - space::S => edge - width,
@@ -379,6 +395,9 @@ impl Component for Panel {
         let keys_run = run.clone();
         let keys_q = q.clone();
         let reveal = move |i: usize, mut scroll: ScrollController, items: &[Item]| {
+            if i >= body_len {
+                return;
+            }
             let (at, row, now) = (top(items, i), height(&items[i]), -scroll.position().y);
             if at < now {
                 scroll.scroll_to_y(-(at as i32));
@@ -480,14 +499,16 @@ impl Component for Panel {
         if let Some(placeholder) = &menu.search {
             panel = panel.child(rect().width(Size::fill()).padding((0., 0., space::XS, 0.)).child(Field::new("menu.search", query).placeholder(placeholder.clone()).glyph(Icon::Search).auto_focus().rows_through()));
         }
+        let footer_entries = entries.split_off(body_len);
+        let footer = (!footer_entries.is_empty()).then(|| rect().width(Size::fill()).child(rect().width(Size::fill()).padding((space::XS, space::S)).child(rect().width(Size::fill()).height(Size::px(1.)).background(t.separator))).children(footer_entries));
         if none_found {
             entries.insert(0, rect().width(Size::fill()).height(Size::px(frame::MENU_ROW)).padding((0., space::S)).cross_align(Alignment::Center).main_align(Alignment::Center).child(line(&t, tr("Nichts gefunden"), font::CALLOUT, t.text3)).into_element());
         }
         if rows <= list_h {
-            return panel.children(entries).into_element();
+            return panel.children(entries).maybe_child(footer).into_element();
         }
         let edges = fades(t.raised, -scroll.position().y, rows, list_h);
-        panel.child(rect().width(Size::fill()).height(Size::px(list_h)).child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::px(list_h)).children(entries)).children(edges)).into_element()
+        panel.child(rect().width(Size::fill()).height(Size::px(list_h)).child(ScrollView::new_controlled(scroll).width(Size::fill()).height(Size::px(list_h)).children(entries)).children(edges)).maybe_child(footer).into_element()
     }
 }
 

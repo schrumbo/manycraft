@@ -83,6 +83,8 @@ pub struct Loaded {
     pub resume: Vec<String>,
     /// The memory one game of each batch was measured to hold in earlier runs, in MB, by batch id.
     pub measured: HashMap<String, u32>,
+    /// Seconds each instance was played in earlier runs, by instance id.
+    pub playtime: HashMap<String, u64>,
 }
 
 /// Something that happened.
@@ -195,6 +197,8 @@ pub enum Event {
     ShotsDue { generation: u64 },
     /// The memory of the running games is due to be read.
     UsageDue,
+    /// The play time of the running games is due to be written down.
+    PlaytimeDue,
     /// The memory each running game holds for itself, in MB, by key.
     Usage(Vec<(String, u64)>),
     /// Batches, accounts or settings changed; every connected game hears its identity again.

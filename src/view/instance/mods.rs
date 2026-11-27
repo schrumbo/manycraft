@@ -326,7 +326,13 @@ impl Component for Mods {
             }))
         };
 
-        let mut bar = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(filter).child(sort_menu).child(more);
+        let look = {
+            let ctx = ctx.clone();
+            let checking = matches!(*ctx.found.read(), updates::Found::Checking { quiet: false });
+            let why = ctx.why_updates();
+            Button::new("instance.mods.check", tr("Nach Updates suchen")).plain().glyph(Icon::Refresh).busy(checking).disabled(why).on_press(move |_| ctx.check_updates())
+        };
+        let mut bar = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(filter).child(sort_menu).child(look).child(more);
         if !scan.entries().is_empty() || loading {
             let run = add.run.clone();
             bar = bar.child(Button::new("instance.mods.add", add.label.clone()).primary().glyph(add.glyph).disabled(add.disabled.clone()).on_press(move |_| run.call(())));
