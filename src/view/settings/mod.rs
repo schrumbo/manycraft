@@ -49,12 +49,13 @@ enum Section {
     Always,
     Alerts,
     Chat,
+    Shots,
     Keys,
     Updates,
 }
 
 impl Section {
-    const ALL: [Section; 8] = [Section::Look, Section::Start, Section::Playing, Section::Always, Section::Alerts, Section::Chat, Section::Keys, Section::Updates];
+    const ALL: [Section; 9] = [Section::Look, Section::Start, Section::Playing, Section::Always, Section::Alerts, Section::Chat, Section::Shots, Section::Keys, Section::Updates];
 
     fn title(self) -> String {
         match self {
@@ -64,6 +65,7 @@ impl Section {
             Self::Always => tr("Dauerbetrieb"),
             Self::Alerts => tr("Meldungen"),
             Self::Chat => tr("Chat"),
+            Self::Shots => tr("Bildschirmfotos ohne Spiel"),
             Self::Keys => tr("Tastenkürzel im Spiel"),
             Self::Updates => tr("Updates und Daten"),
         }
@@ -167,6 +169,23 @@ fn attempts(p: Prefs, id: &str, label: String, value: u32, apply: fn(&mut Settin
 }
 
 /// The chat row that sends lines; it only works while the merged chat is on, and says so while it does not.
+/// One switch per part of a screenshot taken without a game.
+fn shot_parts(p: Prefs, s: &Settings) -> Vec<Element> {
+    let h = s.headless_hud;
+    vec![
+        toggle(p, "settings.shots.chat", tr("Chat"), tr("Die letzten Chatzeilen unten links."), h.chat, |s, on| s.headless_hud.chat = on),
+        toggle(p, "settings.shots.hotbar", tr("Schnellleiste"), tr("Die neun Plätze unten, mit dem Platz für die zweite Hand."), h.hotbar, |s, on| s.headless_hud.hotbar = on),
+        toggle(p, "settings.shots.hand", tr("Hand und Gegenstand"), tr("Die Hand mit dem, was sie hält, unten rechts im Bild."), h.hand, |s, on| s.headless_hud.hand = on),
+        toggle(p, "settings.shots.crosshair", tr("Fadenkreuz"), tr("Das Kreuz in der Mitte des Bilds."), h.crosshair, |s, on| s.headless_hud.crosshair = on),
+        toggle(p, "settings.shots.stats", tr("Leben, Hunger, Rüstung und Luft"), tr("Herzen, Hunger, Rüstung und Luft über der Schnellleiste."), h.stats, |s, on| s.headless_hud.stats = on),
+        toggle(p, "settings.shots.experience", tr("Erfahrungsleiste und Level"), tr("Der grüne Balken über der Schnellleiste und die Zahl darauf."), h.experience, |s, on| s.headless_hud.experience = on),
+        toggle(p, "settings.shots.bosses", tr("Bossleisten"), tr("Die Balken oben in der Mitte."), h.bosses, |s, on| s.headless_hud.bosses = on),
+        toggle(p, "settings.shots.sidebar", tr("Anzeigetafel"), tr("Die Liste am rechten Rand, die ein Server einblendet."), h.sidebar, |s, on| s.headless_hud.sidebar = on),
+        toggle(p, "settings.shots.titles", tr("Titel und Hinweiszeile"), tr("Große Titel mit Untertitel und die Zeile über der Schnellleiste."), h.titles, |s, on| s.headless_hud.titles = on),
+        toggle(p, "settings.shots.vignette", tr("Dunkle Ränder"), tr("Der Schatten an den Bildrändern, wenn es dunkel ist."), h.vignette, |s, on| s.headless_hud.vignette = on),
+    ]
+}
+
 fn chat_send(p: Prefs, s: &Settings) -> Element {
     let label = tr("Nachrichten senden");
     let (on, off) = (s.broadcast, !s.merged_chat);
@@ -255,6 +274,7 @@ impl Component for SettingsPage {
                 vec![toggle(p, "settings.chat.merged", tr("Gemeinsamer Chat"), tr("Sammelt die Chatzeilen aller Instanzen auf der Seite Chat."), s.merged_chat, |s, on| s.merged_chat = on), chat_send(p, &s)],
                 None,
             ),
+            Section::Shots => group(&t, Some(section.title()), shot_parts(p, &s), Some(tr("Gilt für Accounts, die ohne Spiel verbunden sind. Neue Bildschirmfotos zeigen nur, was hier an ist."))),
             Section::Keys => group(
                 &t,
                 Some(section.title()),

@@ -18,6 +18,7 @@ use super::commands::Tree;
 use super::crowd::Crowd;
 use super::maps::Maps;
 use super::picture::{self, Request, View};
+use super::render::hud::Hud;
 use super::screen::Screen;
 use super::signing::{Seen, Signature, Signer};
 use super::status::Status;
@@ -35,6 +36,7 @@ use crate::core::chat_pace::{Next, Queue};
 use crate::core::chat_text::Run;
 use crate::core::fleet::Resolved;
 use crate::core::ipc::{ChatKind, ChatOutcome, ChatRefusal, DisconnectCause, Event, FromMod, Offer, StateKind, ToMod};
+use crate::core::settings;
 use crate::core::shots::{self, Moment};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -383,7 +385,7 @@ impl Shared {
         let [x, _, z] = link.position;
         let eye = [link.position[0], link.position[1] + picture::EYE_HEIGHT, link.position[2]];
         let seen = link.crowd.seen(eye, SEEN_RANGE, link.me, link.screen.held(), link.status.left_handed(), &link.maps, |member, name, hideable| link.status.tag(member, name, hideable));
-        let hud = link.status.hud(&link.screen);
+        let hud = Hud { parts: settings::active().headless_hud, ..link.status.hud(&link.screen) };
         let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), seen, hud, position: link.position, rotation: link.rotation, width, height };
         let taken = SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_secs()).ok()).unwrap_or(0);
         let (key, events) = (self.key.clone(), self.events.clone());
