@@ -38,6 +38,7 @@ use super::ipc;
 use super::proxy::Proxy;
 
 pub use cli::cli;
+pub use item::icon as item_icon;
 pub use maps::{SIDE as MAP_SIDE, rgba as map_rgba};
 
 const STACK: usize = 512 << 10;

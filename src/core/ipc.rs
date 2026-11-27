@@ -197,6 +197,9 @@ pub struct Slot {
     pub rgb: Option<u32>,
     /// Whether the name was given to the stack rather than being the item's.
     pub named: bool,
+    /// The dye colour of leather armor and other dyeable items, `0xRRGGBB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dye: Option<u32>,
 }
 
 /// What a server last showed big or above the hotbar; `at` is the Unix second of the last change.

@@ -3,8 +3,9 @@
 
 use anyhow::{Result, bail, ensure};
 
+use super::render::hud;
 use super::text::{self, Line};
-use super::v777::{component, consume_effect};
+use super::v777::{ITEMS, component, consume_effect};
 use super::wire::In;
 
 const MAX_DEPTH: usize = 8;
@@ -37,6 +38,15 @@ struct View {
     damage: i32,
     max_damage: Option<i32>,
     unbreakable: bool,
+}
+
+/// The picture of item `id` (`stone`) as the inventory draws it, `px` × `px` pixels; `Ok(None)` for an id this version does not
+/// know; an error when the game's art cannot be read.
+pub fn icon(id: &str, dye: Option<u32>, glint: bool, px: u32) -> Result<Option<image::RgbaImage>> {
+    let Some(id) = ITEMS.iter().map(|(id, ..)| *id).find(|known| *known == id) else { return Ok(None) };
+    let art = hud::shared()?;
+    let stack = hud::Stack { id, count: 1, glint, damage: 0, max_damage: 0, dye };
+    Ok(Some(hud::item_icon(&art, &stack, px)))
 }
 
 /// Reads an optional item stack; `None` for an empty slot.
