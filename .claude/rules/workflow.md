@@ -2,7 +2,7 @@
 
 Standing instruction from the owner: use the agents below without being asked, and work autonomously up to 1.0. Taste, scope and product questions go to an agent on model `fable`, which answers in the owner's interest; only what needs the owner's hands or accounts goes to the owner, collected in milestone reports.
 
-- Any change beyond a few lines follows the `ship` skill. Questions, reading and one-line fixes do not.
+- Any change beyond a few lines follows the `deliver` skill (not the built-in `/ship`). Questions, reading and one-line fixes do not.
 - Commit at stable points yourself: stage by name, terse message, no co-author. Run `.claude/bin/sync` before each commit.
 - Push only at milestones (end of M1, M2, …) and release only then, by bumping `version` in `Cargo.toml` in the milestone's last commit. Every push costs GitHub CI minutes; never push work in progress.
 - A Stop hook runs `.claude/bin/gate` (clippy, tests, UI lint, and the mod or agent build when `mod/` or `agent/` changed) and asks for missing reviews. Treat its message as a task. If a finding is a false positive or a review does not apply, say why in one line and stop again.

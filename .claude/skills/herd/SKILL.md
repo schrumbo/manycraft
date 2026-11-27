@@ -16,7 +16,7 @@ Each helper is a full session with its own context, so it costs far more than a 
 .claude/bin/herd rm <name>
 ```
 
-Worktree: `.claude/worktrees/<name>`, branch `herd/<name>`, started from the last commit. Uncommitted work on main is invisible to helpers, so commit before spawning. Default model Sonnet. Helpers follow `ship`, commit only on their own branch and report back as `<hc from=...>`.
+Worktree: `.claude/worktrees/<name>`, branch `herd/<name>`, started from the last commit. Uncommitted work on main is invisible to helpers, so commit before spawning. Default model Sonnet. Helpers follow `deliver`, commit only on their own branch and report back as `<hc from=...>`.
 
 1. Give each helper a `--lane`: the only paths it may change. `herd land` refuses a diff outside it (`HERD_LANE_OK=1` overrides after a look). Split the work so files do not overlap. Declare shared modules (`mod.rs`, `Cargo.toml` deps, entry points) on main first so helpers only fill their own files. Give each helper the task, the file scope and the acceptance check.
 2. Keep working. Wait with `hc wait --children any`, never sleep.

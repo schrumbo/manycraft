@@ -68,7 +68,7 @@ case "$cmd" in
     reach="${HC_TERMINAL_ID:-}"
     mkdir -p "$ROOT/.git/herd-lanes"
     if [ -n "$lane" ]; then printf '%s\n' "$lane" | tr ',' '\n' > "$ROOT/.git/herd-lanes/$name"; else rm -f "$ROOT/.git/herd-lanes/$name"; fi
-    prompt="You work alone in the git worktree $wt on branch herd/$name. Only touch this worktree. Follow the ship skill. Commit only on branch herd/$name at stable points, no co-author; never push, merge or touch main. Do not start other hc agents. Builds take a machine-wide lock, so cargo may wait for another helper's build; that is normal, do not cancel it. Task: $task"
+    prompt="You work alone in the git worktree $wt on branch herd/$name. Only touch this worktree. Follow the deliver skill. Commit only on branch herd/$name at stable points, no co-author; never push, merge or touch main. Do not start other hc agents. Builds take a machine-wide lock, so cargo may wait for another helper's build; that is normal, do not cancel it. Task: $task"
     [ -n "$lane" ] && prompt="$prompt Your lane, the only paths you may change: $lane. If the clean fix needs a file outside it, stop and report instead of editing it."
     [ -n "$reach" ] && prompt="$prompt Report the result or any blocker with: hc send $reach \"<text>\""
     if [ "$cli" = "agy" ]; then

@@ -1,9 +1,9 @@
 ---
-name: ship
+name: deliver
 description: Default path for every code change in Manycraft beyond a few lines, from spec to commit, with agents for implementation, review and real-app testing. Use for features, bug fixes, refactors, UI and companion-mod work, without being asked.
 ---
 
-# Ship
+# Deliver
 
 1. **Spec.** State the outcome, the acceptance check and every state of the workflow it touches: entry, hover, press, focus, loading, empty, error, undo, exit. Name the archetypes from `.claude/rules/users.md` the change touches; A is always touched by user-facing changes. Design it here; this is where quality is decided. For UI, use the `apple-design` skill and read `~/.claude/skills/app-polish/references/feel.md` and `flows.md`; shorten the workflow before polishing it. Ask only about removals and remakes.
 2. **Locate.** Use LSP and `Explore`. Do not read whole large files.
