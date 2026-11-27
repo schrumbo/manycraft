@@ -229,6 +229,73 @@ pub fn remove(instance_dir: &Path, dir: &Path, file: &str) -> Result<String> {
     trash::put(instance_dir, &dir.join(file))
 }
 
+/// What [`add_files`] did: the names it copied and the names it left alone because they were taken.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Added {
+    pub added: Vec<String>,
+    pub taken: Vec<String>,
+}
+
+/// Copies the `.zip` files `paths` into `dir`, a folder inside `instance_dir`; other files are ignored. A name that is
+/// already there (in any case) is left alone and returned in `taken`; with `replace` the old pack goes to the instance's
+/// trash instead and the new one takes its place. Nothing stays changed when it fails.
+pub fn add_files(instance_dir: &Path, dir: &Path, paths: &[PathBuf], replace: bool) -> Result<Added> {
+    std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let mut present: HashMap<String, String> = std::fs::read_dir(dir)
+        .with_context(|| format!("cannot read {}", dir.display()))?
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().into_string().ok())
+        .map(|n| (n.to_lowercase(), n))
+        .collect();
+    let mut done = Added::default();
+    let mut copied: Vec<PathBuf> = Vec::new();
+    let mut trashed: Vec<String> = Vec::new();
+    let result = (|| -> Result<()> {
+        for path in paths {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            if !name.to_lowercase().ends_with(".zip") || modrinth::safe_file_name(name).is_err() || !path.is_file() {
+                continue;
+            }
+            let lower = name.to_lowercase();
+            if let Some(old) = present.get(&lower) {
+                if done.added.iter().any(|n| n.to_lowercase() == lower) {
+                    continue;
+                }
+                if !replace {
+                    if !done.taken.iter().any(|n| n.to_lowercase() == lower) {
+                        done.taken.push(name.to_owned());
+                    }
+                    continue;
+                }
+                trashed.push(trash::put(instance_dir, &dir.join(old))?);
+            }
+            let target = dir.join(name);
+            let tmp = dir.join(format!("{name}.manycraft-tmp"));
+            let placed = std::fs::copy(path, &tmp).with_context(|| format!("cannot copy {}", path.display())).and_then(|_| modrinth::rename(&tmp, &target));
+            if let Err(e) = placed {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+            copied.push(target);
+            present.insert(lower, name.to_owned());
+            done.added.push(name.to_owned());
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(done),
+        Err(e) => {
+            for path in &copied {
+                let _ = std::fs::remove_file(path);
+            }
+            for entry in trashed.iter().rev() {
+                let _ = trash::take_back(instance_dir, entry);
+            }
+            Err(e)
+        }
+    }
+}
+
 /// Puts a pack [`remove`] took back where it was.
 pub fn put_back(instance_dir: &Path, entry: &str) -> Result<PathBuf> {
     trash::take_back(instance_dir, entry)
@@ -892,5 +959,46 @@ mod tests {
         assert_eq!(readable(body), "# Fresh & new\n\nMoves mobs 3 < 4 more\n\nSee https://x.org.\n```\n<keep> ![this](x)\n```");
         assert_eq!(readable("![unclosed](x"), "![unclosed](x");
         assert_eq!(readable("a < b and c > d"), "a < b and c > d");
+    }
+
+    fn zip_at(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn added_packs_are_copied_and_a_taken_name_is_left_alone_until_replace_is_asked_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        let instance = tmp.path().join("inst");
+        let dir = instance.join("resourcepacks");
+        zip_at(&dir, "Old.zip", b"old");
+        let picked = [zip_at(&tmp.path().join("0"), "old.ZIP", b"new"), zip_at(&tmp.path().join("1"), "fresh.zip", b"fresh"), zip_at(&tmp.path().join("2"), "notes.txt", b"x"), tmp.path().join("missing.zip")];
+        let first = add_files(&instance, &dir, &picked, false).unwrap();
+        assert_eq!(first, Added { added: vec!["fresh.zip".into()], taken: vec!["old.ZIP".into()] });
+        assert_eq!(std::fs::read(dir.join("Old.zip")).unwrap(), b"old");
+        assert_eq!(std::fs::read(dir.join("fresh.zip")).unwrap(), b"fresh");
+        assert!(!dir.join("notes.txt").exists());
+        let second = add_files(&instance, &dir, &picked[..1], true).unwrap();
+        assert_eq!(second, Added { added: vec!["old.ZIP".into()], taken: Vec::new() });
+        assert_eq!(std::fs::read(dir.join("old.ZIP")).unwrap(), b"new");
+        let held: Vec<_> = std::fs::read_dir(instance.join(".trash")).unwrap().collect();
+        assert_eq!(held.len(), 1);
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".manycraft-tmp")));
+    }
+
+    #[test]
+    fn a_failed_pack_copy_leaves_the_folder_as_it_was() {
+        let tmp = tempfile::tempdir().unwrap();
+        let instance = tmp.path().join("inst");
+        let dir = instance.join("shaderpacks");
+        zip_at(&dir, "a.zip", b"old-a");
+        zip_at(&dir, "b.zip", b"old-b");
+        std::fs::create_dir(dir.join("b.zip.manycraft-tmp")).unwrap();
+        let picked = [zip_at(&tmp.path().join("0"), "a.zip", b"new-a"), zip_at(&tmp.path().join("1"), "b.zip", b"new-b")];
+        assert!(add_files(&instance, &dir, &picked, true).is_err());
+        assert_eq!(std::fs::read(dir.join("a.zip")).unwrap(), b"old-a");
+        assert_eq!(std::fs::read(dir.join("b.zip")).unwrap(), b"old-b");
     }
 }

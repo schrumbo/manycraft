@@ -34,6 +34,9 @@ mod trouble;
 #[path = "mods_updates.rs"]
 mod updates;
 
+/// Window width from which the bar names its file button instead of showing only its icon.
+const LABELED_FROM: f32 = 1200.;
+
 /// A problem shown above the list; `failed` when it came from a change, not from reading the files.
 #[derive(Clone, PartialEq)]
 pub(super) struct Fault {
@@ -56,6 +59,8 @@ pub(super) struct Ctx {
     pub busy: State<bool>,
     pub bisecting: State<bool>,
     pub reveal: State<Option<String>>,
+    /// Lower-case file names of the rows that were just added, washed in the accent for a moment.
+    pub flash: State<Rc<HashSet<String>>>,
     pub ticket: State<u64>,
     pub key: State<String>,
     pub list: Cursor,
@@ -104,6 +109,7 @@ struct View {
     rows: Rc<Vec<Row>>,
     marks: Rc<HashMap<String, String>>,
     selected: Rc<HashSet<String>>,
+    flash: Rc<HashSet<String>>,
     cursor: Option<String>,
     locked: Option<String>,
     ctx: Ctx,
@@ -111,7 +117,7 @@ struct View {
 
 impl PartialEq for View {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.data, &other.data) && Rc::ptr_eq(&self.rows, &other.rows) && Rc::ptr_eq(&self.marks, &other.marks) && Rc::ptr_eq(&self.selected, &other.selected) && self.cursor == other.cursor && self.locked == other.locked
+        Rc::ptr_eq(&self.data, &other.data) && Rc::ptr_eq(&self.rows, &other.rows) && Rc::ptr_eq(&self.marks, &other.marks) && Rc::ptr_eq(&self.selected, &other.selected) && Rc::ptr_eq(&self.flash, &other.flash) && self.cursor == other.cursor && self.locked == other.locked
     }
 }
 
@@ -152,6 +158,7 @@ impl View {
                         }),
                         selected,
                         cursor,
+                        flash: self.flash.contains(&e.file.to_lowercase()),
                         locked: self.locked.clone(),
                         trail,
                         update: project.and_then(|id| self.marks.get(id).cloned()),
@@ -201,6 +208,7 @@ impl Component for Mods {
         let busy = use_state(|| false);
         let bisecting = use_state(|| false);
         let reveal = use_state(|| None::<String>);
+        let flash = use_state(|| Rc::new(HashSet::<String>::new()));
         let ticket = use_state(|| 0u64);
         let key = use_state(String::new);
         let list = use_cursor();
@@ -212,7 +220,7 @@ impl Component for Mods {
 
         let found = use_state(|| updates::Found::Idle);
         let pane = use_pane(store, list);
-        let ctx = Ctx { store, id, data, fault, query, sort, selected, anchor, bisect, busy, bisecting, reveal, ticket, key, list, filter_focus, pane, found };
+        let ctx = Ctx { store, id, data, fault, query, sort, selected, anchor, bisect, busy, bisecting, reveal, flash, ticket, key, list, filter_focus, pane, found };
 
         let changed = *ui.instance.changed.read();
         let rescan = ctx.clone();
@@ -332,7 +340,13 @@ impl Component for Mods {
             let why = ctx.why_updates();
             Button::new("instance.mods.check", tr("Nach Updates suchen")).plain().glyph(Icon::Refresh).busy(checking).disabled(why).on_press(move |_| ctx.check_updates())
         };
-        let mut bar = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(filter).child(sort_menu).child(look).child(more);
+        let from_file = {
+            let ctx = ctx.clone();
+            let label = tr("Aus Datei hinzufügen…");
+            let button = if ui.window.read().0 < LABELED_FROM { Button::icon("instance.mods.add_file", Icon::Upload, label) } else { Button::new("instance.mods.add_file", label).glyph(Icon::Upload) };
+            button.plain().disabled(lock.clone()).on_press(move |_| ctx.pick_jars())
+        };
+        let mut bar = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(filter).child(sort_menu).child(look).child(from_file).child(more);
         if !scan.entries().is_empty() || loading {
             let run = add.run.clone();
             bar = bar.child(Button::new("instance.mods.add", add.label.clone()).primary().glyph(add.glyph).disabled(add.disabled.clone()).on_press(move |_| run.call(())));
@@ -361,7 +375,7 @@ impl Component for Mods {
             let button = Button::new("instance.mods.empty.clear", tr("Filter löschen")).on_press(move |_| clear.clear_filter()).into_element();
             empty(&t, Icon::Search, trf("Kein Mod passt zu „%@“.", &[&text.trim()]), String::new(), Some(button))
         } else {
-            let view = View { data: scan.clone(), rows: rows.clone(), marks: marks.clone(), selected: chosen.clone(), cursor: at, locked: lock.clone(), ctx: ctx.clone() };
+            let view = View { data: scan.clone(), rows: rows.clone(), marks: marks.clone(), selected: chosen.clone(), flash: ctx.flash.read().clone(), cursor: at, locked: lock.clone(), ctx: ctx.clone() };
             let list = ctx.list;
             VirtualScrollView::new_with_data_controlled(view, |item, view: &View| view.item(item.index), ctx.list.scroll)
                 .length(rows.len())
@@ -412,7 +426,7 @@ impl Component for Mods {
         root = root.child(list);
         let left = root.content(Content::flex());
         if !ctx.pane.shown() {
-            return drop_zone(&t, dropping, &ctx, detail::split(&t, 0., left, None));
+            return drop_zone(&t, dropping, ctx.dropper(), detail::split(&t, 0., left, None));
         }
         let window = ui.window.read().0;
         let (close, versions) = (ctx.clone(), ctx.clone());
@@ -422,12 +436,11 @@ impl Component for Mods {
             _ => None,
         };
         let pane = Detail { id: "instance.mods.detail", subject, narrow: window < page::SPLIT_AT, back: tr("Mods"), close: EventHandler::new(move |_| close.pane.close()), versions: open };
-        drop_zone(&t, dropping, &ctx, detail::split(&t, window, left, Some(pane)))
+        drop_zone(&t, dropping, ctx.dropper(), detail::split(&t, window, left, Some(pane)))
     }
 }
-/// `inner` as one drop target for the whole tab, list and detail pane alike, washed in the accent while files are dragged over the window.
-fn drop_zone(t: &Theme, mut dropping: State<bool>, ctx: &Ctx, inner: Element) -> Element {
-    let ctx = ctx.clone();
+/// `inner` as one drop target for the whole tab, list and detail pane alike, washed in the accent while files are dragged over the window; `on_drop` gets what lands on it.
+pub(super) fn drop_zone(t: &Theme, mut dropping: State<bool>, on_drop: impl Fn(Vec<std::path::PathBuf>) + 'static, inner: Element) -> Element {
     rect()
         .width(Size::fill())
         .height(Size::fill())
@@ -437,10 +450,7 @@ fn drop_zone(t: &Theme, mut dropping: State<bool>, ctx: &Ctx, inner: Element) ->
         .on_file_drop(move |e: Event<FileEventData>| {
             dropping.set_if_modified(false);
             crate::view::kit::drop::claim(&e);
-            match ctx.locked() {
-                Some(why) => ctx.note(why),
-                None => ctx.dropped(e.file_paths.clone()),
-            }
+            on_drop(e.file_paths.clone());
         })
         .child(inner)
         .maybe_child((*dropping.read()).then(|| {

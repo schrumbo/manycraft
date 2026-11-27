@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -10,6 +10,7 @@ use freya::prelude::*;
 use super::cursor::{self, Cursor, use_cursor};
 use super::detail::{self, Detail, Pane, Subject, use_pane};
 use super::entry::{EntryRow, ROW, RowAction, bar};
+use super::mods::drop_zone;
 use super::shots_parts::centered;
 use super::{Facts, actions};
 use crate::core::batch::ModRef;
@@ -26,13 +27,15 @@ use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::text::{caption, secondary};
-use crate::view::kit::{Bounds, Live, off_ui, open_external, page, toast, use_theme};
+use crate::view::kit::sheet;
+use crate::view::kit::{Bounds, Live, after, off_ui, open_external, page, toast, use_theme};
 use crate::view::native;
 use crate::view::sheets::browser;
 use crate::view::store::{Store, use_store};
-use crate::view::theme::{control, space};
+use crate::view::theme::{control, frame, space};
 
 const FRESH: Duration = Duration::from_secs(600);
+const FLASH_FOR: Duration = Duration::from_millis(2500);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Entry {
@@ -205,9 +208,102 @@ struct Ops {
     kind: Kind,
     loader: crate::core::instance::Loader,
     matches: Matches,
+    flash: State<Rc<HashSet<String>>>,
 }
 
 impl Ops {
+    /// What the tab does with files dropped on it.
+    fn dropper(&self) -> impl Fn(Vec<PathBuf>) + 'static {
+        let ops = self.clone();
+        move |paths| ops.dropped(paths)
+    }
+
+    fn dropped(&self, paths: Vec<PathBuf>) {
+        let (zips, other): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("zip")));
+        if !other.is_empty() {
+            toast::show(self.store.ui, tr("Hier lassen sich nur .zip-Dateien ablegen."), None);
+        }
+        if !zips.is_empty() {
+            self.add(zips, false);
+        }
+    }
+
+    fn pick(&self) {
+        let ops = self.clone();
+        spawn_in_window(async move {
+            let (title, filter) = if ops.kind == Kind::Shader { (tr("Shader hinzufügen"), tr("Shader")) } else { (tr("Ressourcenpakete hinzufügen"), tr("Ressourcenpakete")) };
+            let Some(picked) = off_ui(move || native::pick_files(&title, &filter, &["zip"], true)).await else { return };
+            ops.dropped(picked);
+        });
+    }
+
+    /// Copies the packs `zips` into the folder; with `replace` packs of the same name are replaced, otherwise a sheet asks.
+    fn add(&self, zips: Vec<PathBuf>, replace: bool) {
+        let ops = self.clone();
+        spawn_in_window(async move {
+            let (home, dir, work) = (ops.instance_dir.clone(), ops.dir.clone(), zips.clone());
+            let what = if replace { tr("Nicht ersetzt.") } else { tr("Nicht hinzugefügt.") };
+            match off_ui(move || packs::add_files(&home, &dir, &work, replace)).await {
+                Some(Ok(done)) => {
+                    if !done.added.is_empty() {
+                        ops.flash_rows(&done.added);
+                        let label = if let [one] = done.added.as_slice() { format!("„{}“", shown_name(one)) } else { trf("%lld Dateien", &[&done.added.len()]) };
+                        toast::show(ops.store.ui, if replace { trf("%@ ersetzt.", &[&label]) } else { trf("%@ hinzugefügt.", &[&label]) }, None);
+                    }
+                    let clashes: Vec<PathBuf> = zips.into_iter().filter(|p| p.file_name().is_some_and(|n| done.taken.contains(&n.to_string_lossy().into_owned()))).collect();
+                    ops.ask_replace(clashes);
+                }
+                Some(Err(e)) => {
+                    toast::show(ops.store.ui, forms::explain_as(what, &e).text, None);
+                }
+                None => {
+                    toast::show(ops.store.ui, what, None);
+                }
+            }
+            actions::changed(ops.store);
+        });
+    }
+
+    fn ask_replace(&self, zips: Vec<PathBuf>) {
+        let names: Vec<String> = zips.iter().filter_map(|p| p.file_name()).map(|n| shown_name(&n.to_string_lossy())).collect();
+        let heading = match names.as_slice() {
+            [] => return,
+            [one] => trf("„%@“ ersetzen?", &[one]),
+            many => trf("%lld Dateien ersetzen?", &[&many.len()]),
+        };
+        let message = match names.as_slice() {
+            [_] => tr("Es gibt schon eine Datei mit diesem Namen."),
+            _ => trf("Diese Namen gibt es schon: %@.", &[&names.join(", ")]),
+        };
+        let (ops, ui, key) = (self.clone(), self.store.ui, self.area());
+        let primary = sheet::Primary {
+            label: tr("Ersetzen"),
+            disabled: None,
+            danger: false,
+            busy: false,
+            run: EventHandler::new(move |_| {
+                sheet::close(ui);
+                ops.add(zips.clone(), true);
+            }),
+        };
+        sheet::open(ui, sheet::Card::new(format!("instance.{key}.replace"), heading).message(message).primary(primary).primary_id(format!("instance.{key}.replace.ok")).on_enter(move |_| sheet::close(ui)).width(frame::SHEET_NARROW));
+    }
+
+    /// Washes the rows of `names` in the accent for a moment.
+    fn flash_rows(&self, names: &[String]) {
+        let mine: Rc<HashSet<String>> = Rc::new(names.iter().map(|n| n.to_lowercase()).collect());
+        let flash = self.flash;
+        flash.soft(|f| *f = mine.clone());
+        spawn_in_window(async move {
+            after(FLASH_FOR).await;
+            flash.soft(|f| {
+                if Rc::ptr_eq(f, &mine) {
+                    *f = Rc::new(HashSet::new());
+                }
+            });
+        });
+    }
+
     fn area(&self) -> &'static str {
         spot(self.kind)
     }
@@ -316,10 +412,15 @@ impl Ops {
 
     /// The palette entries of the tab; the pack they act on is the one under the cursor.
     fn extras(&self, list: Cursor, filter: AccessibilityId, entries: &[Entry]) -> Vec<Extra> {
-        if entries.is_empty() {
-            return Vec::new();
-        }
         let key = self.area();
+        let add = {
+            let ops = self.clone();
+            let label = if self.kind == Kind::Shader { tr("Shader aus Datei hinzufügen…") } else { tr("Ressourcenpakete aus Datei hinzufügen…") };
+            Extra { id: format!("instance.{key}.addfile"), label, glyph: Icon::Upload, shortcut: Some(Shortcut::alt(Code::KeyO)), run: EventHandler::new(move |_| ops.pick()) }
+        };
+        if entries.is_empty() {
+            return vec![add];
+        }
         let shader = self.kind == Kind::Shader;
         let (find, flip, drop_it) = if shader {
             (tr("Shader filtern"), tr("Shader ein- oder ausschalten"), tr("Shader entfernen"))
@@ -357,6 +458,7 @@ impl Ops {
             details,
             act("toggle", flip, Icon::Check, |ops, _, _, e| ops.toggle(e, !e.on)),
             act("remove", drop_it, Icon::Trash, |ops, list, among, e| ops.discard(list, among, e)),
+            add,
         ]
     }
 }
@@ -366,13 +468,14 @@ struct Rows {
     shown: Rc<Vec<Entry>>,
     ops: Ops,
     at: Option<String>,
+    flash: Rc<HashSet<String>>,
     list: Cursor,
     area: &'static str,
 }
 
 impl PartialEq for Rows {
     fn eq(&self, other: &Self) -> bool {
-        *self.shown == *other.shown && self.at == other.at && Rc::ptr_eq(&self.ops.matches, &other.ops.matches) && self.ops.id == other.ops.id && self.ops.kind == other.ops.kind
+        *self.shown == *other.shown && self.at == other.at && Rc::ptr_eq(&self.ops.matches, &other.ops.matches) && Rc::ptr_eq(&self.flash, &other.flash) && self.ops.id == other.ops.id && self.ops.kind == other.ops.kind
     }
 }
 
@@ -413,6 +516,7 @@ impl Rows {
                 glyph: if e.folder { Icon::Folder } else if kind == Kind::Shader { Icon::Sparkles } else { Icon::Palette },
                 selected: false,
                 cursor: self.at.as_deref() == Some(e.file.as_str()),
+                flash: self.flash.contains(&e.file.to_lowercase()),
                 locked: None,
                 update: pack.is_some_and(|p| p.update).then(String::new),
                 actions: ops.actions(e),
@@ -452,6 +556,8 @@ impl Component for Packs {
         let filter_focus = use_a11y();
         let mut known = use_state(|| (String::new(), Matches::default()));
         let mut more_bounds = use_state(Bounds::default);
+        let flash = use_state(|| Rc::new(HashSet::<String>::new()));
+        let dropping = use_state(|| false);
         let key = spot(kind);
         use_side_effect_with_deps(&(dir.clone(), instance_dir.clone(), kind, changed), move |(dir, instance_dir, kind, _)| {
             let (dir, instance_dir, kind) = (dir.clone(), instance_dir.clone(), *kind);
@@ -503,7 +609,7 @@ impl Component for Packs {
         };
         let pane = use_pane(store, list);
         let settled = known.read().0 == tag;
-        let ops = Ops { store, pane, settled, id: id.clone(), instance_dir: instance_dir.clone(), dir: dir.clone(), kind, loader: loader.clone(), matches };
+        let ops = Ops { store, pane, settled, id: id.clone(), instance_dir: instance_dir.clone(), dir: dir.clone(), kind, loader: loader.clone(), matches, flash };
         let at = list.at.read().clone().filter(|_| list.focus.is_focused() || pane.shown());
         super::use_extras(ops.extras(list, filter_focus, &entries));
         if !ready {
@@ -521,11 +627,16 @@ impl Component for Packs {
                 _ => (tr("Noch keine Ressourcenpakete"), tr("Ressourcenpakete ändern, wie das Spiel aussieht und klingt.")),
             };
             let add = Button::new(format!("instance.{key}.empty.add"), tr("Hinzufügen…")).glyph(Icon::Plus).primary().on_press(move |_| browser::find(store, &add_id, kind));
-            let empty = centered(&t, if kind == Kind::Shader { Icon::Sparkles } else { Icon::Palette }, text, body, Some(add));
-            return match hint {
+            let from_file = {
+                let ops = ops.clone();
+                Button::new(format!("instance.{key}.empty.add_file"), tr("Aus Datei hinzufügen…")).glyph(Icon::Upload).on_press(move |_| ops.pick())
+            };
+            let empty = centered(&t, if kind == Kind::Shader { Icon::Sparkles } else { Icon::Palette }, text, body, [add, from_file]);
+            let page = match hint {
                 None => empty,
                 Some(name) => page::column().height(Size::fill()).spacing(space::S).content(Content::flex()).child(loader_bar(&name)).child(rect().width(Size::fill()).height(Size::flex(1.)).child(empty)).into_element(),
             };
+            return drop_zone(&t, dropping, ops.dropper(), page);
         }
 
         let placeholder = if kind == Kind::Shader { tr("Shader filtern") } else { tr("Ressourcenpakete filtern") };
@@ -562,7 +673,11 @@ impl Component for Packs {
                     }
                 }))
         };
-        let mut top = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(filter).child(more);
+        let from_file = {
+            let ops = ops.clone();
+            Button::new(format!("instance.{key}.add_file"), tr("Aus Datei hinzufügen…")).plain().glyph(Icon::Upload).on_press(move |_| ops.pick())
+        };
+        let mut top = rect().width(Size::fill()).horizontal().cross_align(Alignment::Center).spacing(space::S).content(Content::flex()).child(filter).child(from_file).child(more);
         if !entries.is_empty() {
             top = top.child(Button::new(format!("instance.{key}.add"), tr("Hinzufügen…")).glyph(Icon::Plus).primary().on_press(move |_| browser::find(store, &add_id, kind)));
         }
@@ -570,7 +685,7 @@ impl Component for Packs {
         let count = if needle.is_empty() { trf("%lld installiert", &[&entries.len()]) } else { trf("%lld von %lld", &[&shown.len(), &entries.len()]) };
         let counts = rect().width(Size::fill()).height(Size::px(control::S)).horizontal().cross_align(Alignment::Center).child(caption(&t, count).max_lines(1));
 
-        let rows = Rows { shown: shown.clone(), ops: ops.clone(), at, list, area: key };
+        let rows = Rows { shown: shown.clone(), ops: ops.clone(), at, flash: ops.flash.read().clone(), list, area: key };
 
         let body: Element = if shown.is_empty() {
             let mut clear = query;
@@ -601,7 +716,7 @@ impl Component for Packs {
         }
         let left = root.child(counts).child(body).content(Content::flex());
         if !pane.shown() {
-            return detail::split(&t, 0., left, None);
+            return drop_zone(&t, dropping, ops.dropper(), detail::split(&t, 0., left, None));
         }
         let window = ui.window.read().0;
         let current = list.current();
@@ -610,7 +725,7 @@ impl Component for Packs {
         let versions = current.filter(|f| ops.matches.contains_key(f)).map(|f| EventHandler::new(move |_| show.versions(&f)));
         let back = if kind == Kind::Shader { tr("Shader") } else { tr("Ressourcenpakete") };
         let detail = Detail { id: if kind == Kind::Shader { "instance.shaders.detail" } else { "instance.packs.detail" }, subject, narrow: window < page::SPLIT_AT, back, close: EventHandler::new(move |_| close.pane.close()), versions };
-        detail::split(&t, window, left, Some(detail))
+        drop_zone(&t, dropping, ops.dropper(), detail::split(&t, window, left, Some(detail)))
     }
 }
 

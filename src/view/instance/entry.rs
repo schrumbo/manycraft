@@ -16,7 +16,7 @@ use crate::view::kit::switch::Switch;
 use crate::view::kit::text::line;
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::use_theme;
-use crate::view::theme::{Theme, control, font, iconsize, space};
+use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 
 /// The side of a mod's icon.
 pub(in crate::view::instance) const FACE: f32 = control::L + space::S;
@@ -150,6 +150,8 @@ pub(in crate::view::instance) struct EntryRow {
     pub glyph: Icon,
     pub selected: bool,
     pub cursor: bool,
+    /// Washed in the accent for a moment, such as a row that was just added.
+    pub flash: bool,
     pub locked: Option<String>,
     pub update: Option<String>,
     pub actions: Vec<RowAction>,
@@ -197,6 +199,8 @@ impl Component for EntryRow {
 
         let fill = if self.selected {
             t.selection
+        } else if self.flash {
+            t.accent.with_a((frame::NOTICE_WASH * 255.) as u8)
         } else if *hovered.read() {
             t.hover
         } else {

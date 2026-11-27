@@ -2393,5 +2393,21 @@
   "Sync stellt gerade Ordner dieser Instanz um. Versuch es gleich noch einmal.": "Sync is switching folders of this instance right now. Try again in a moment.",
   "Sync ausschalten?": "Turn off Sync?",
   "Es entstehen %1$lld eigene Kopien, zusammen etwa %2$@.": "This creates %1$lld separate copies, about %2$@ together.",
-  "Es entstehen mehrere Kopien.": "This creates several copies."
+  "Es entstehen mehrere Kopien.": "This creates several copies.",
+  "Aus Datei hinzufügen…": "Add from file…",
+  "Mods hinzufügen": "Add mods",
+  "Mods aus Datei hinzufügen…": "Add mods from file…",
+  "Ressourcenpakete hinzufügen": "Add resource packs",
+  "Shader hinzufügen": "Add shaders",
+  "Ressourcenpakete aus Datei hinzufügen…": "Add resource packs from file…",
+  "Shader aus Datei hinzufügen…": "Add shaders from file…",
+  "Hier lassen sich nur .zip-Dateien ablegen.": "Only .zip files can be dropped here.",
+  "%@ ersetzen?": "Replace %@?",
+  "„%@“ ersetzen?": "Replace “%@”?",
+  "%lld Dateien ersetzen?": "Replace %lld files?",
+  "Es gibt schon eine Datei mit diesem Namen.": "A file with this name already exists.",
+  "Diese Namen gibt es schon: %@.": "These names already exist: %@.",
+  "Ersetzen": "Replace",
+  "Nicht ersetzt.": "Not replaced.",
+  "%@ ersetzt.": "%@ replaced."
 }
