@@ -226,6 +226,13 @@ mod tests {
     }
 
     #[test]
+    fn boss_bar_titles_are_translated_not_shown_as_keys() {
+        for (key, name) in [("entity.minecraft.ender_dragon", "Ender Dragon"), ("entity.minecraft.wither", "Wither")] {
+            assert_eq!(line(&json!({"translate": key})).text, name);
+        }
+    }
+
+    #[test]
     fn translations_fill_in_their_arguments_with_styles() {
         let joined = line(&json!({"translate": "multiplayer.player.joined", "with": [{"text": "Dev", "color": "yellow"}], "color": "yellow"}));
         assert_eq!(joined.text, "Dev joined the game");

@@ -116,6 +116,7 @@ pub struct Assets {
     pub(super) foliage: Option<Texture>,
     pub(super) dry_foliage: Option<Texture>,
     pub(super) sun: Option<Texture>,
+    pub(super) end_sky: Option<Texture>,
     pub(super) moon: [Option<Texture>; 8],
     pub(super) vignette: Option<Texture>,
     pub(super) figures: Models,
@@ -153,7 +154,7 @@ impl Assets {
     /// Reads what pictures need from a client jar.
     pub fn from_jar(reader: impl Read + Seek) -> Result<Self> {
         let mut zip = zip::ZipArchive::new(reader).context("not a jar")?;
-        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, moon: Default::default(), vignette: None, figures: Models::load()?, pngs: HashMap::new(), sheets: Mutex::default(), data: HashMap::new(), skins: Skins::default(), font: None };
+        let mut assets = Assets { blockstates: HashMap::new(), models: HashMap::new(), textures: Vec::new(), names: HashMap::new(), grass: None, foliage: None, dry_foliage: None, sun: None, end_sky: None, moon: Default::default(), vignette: None, figures: Models::load()?, pngs: HashMap::new(), sheets: Mutex::default(), data: HashMap::new(), skins: Skins::default(), font: None };
         let mut fonts: HashMap<String, Vec<u8>> = HashMap::new();
         let mut bytes = Vec::new();
         for i in 0..zip.len() {
@@ -213,6 +214,7 @@ impl Assets {
                     "colormap/foliage" => assets.foliage = texture(&bytes, false),
                     "colormap/dry_foliage" => assets.dry_foliage = texture(&bytes, false),
                     "environment/celestial/sun" => assets.sun = texture(&bytes, true),
+                    "environment/end_sky" => assets.end_sky = texture(&bytes, true),
                     "misc/vignette" => assets.vignette = texture(&bytes, true),
                     _ if name.starts_with("environment/celestial/moon/") => {
                         if let Some(phase) = MOON.iter().position(|p| name.ends_with(p)) {

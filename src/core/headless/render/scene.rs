@@ -467,7 +467,7 @@ impl<'a, W: Blocks> Scene<'a, W> {
             if n[0] * v[0][0] + n[1] * v[0][1] + n[2] * v[0][2] <= 0.0 || !target.visible(&v) {
                 continue;
             }
-            let shade = f.shade.shade();
+            let shade = lightmap.shade(f.shade);
             let lit: [(f32, Packed); 4] = if smooth {
                 light::ambient(f.face, &self.samples(info, pos, f), &light::shape(f.lo, f.hi))
             } else {
@@ -574,7 +574,7 @@ impl<'a, W: Blocks> Scene<'a, W> {
                 return;
             }
             let l = lightmap.color(light);
-            let g = d.shade();
+            let g = lightmap.shade(d);
             let c = [g * l[0] * tint[0], g * l[1] * tint[1], g * l[2] * tint[2]];
             let corners = [0, 1, 2, 3].map(|i| Vertex { p: v[i], uv: uv[i], c });
             let tex = assets.texture(texture);

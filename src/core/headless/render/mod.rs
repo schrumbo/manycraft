@@ -10,6 +10,7 @@ mod assets;
 mod actor;
 mod block;
 mod entity;
+mod environment;
 mod figure;
 mod font;
 pub mod hud;
@@ -28,6 +29,7 @@ mod states;
 use serde_json::Value;
 
 pub use self::assets::{Assets, shared};
+pub use self::environment::{Cardinal, Environment, Skybox};
 pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, MapPicture, Nobody, Pose, Skin, Text, slot};
 use self::light::Lightmap;
 use self::raster::{Fog, Later, Target};
@@ -62,7 +64,7 @@ pub struct Camera {
     pub distance: u8,
 }
 
-/// Time and weather; the day at noon without rain when unknown.
+/// Time, weather and the dimension's atmosphere; the overworld at noon without rain when unknown.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Sky {
     /// The day time in ticks (0..24000 is one day), as the server sends it.
@@ -70,6 +72,8 @@ pub struct Sky {
     /// Rain and thunder strength, 0..1.
     pub rain: f32,
     pub thunder: f32,
+    /// The light and sky rules of the dimension the account is in.
+    pub environment: Environment,
 }
 
 /// How a biome changes grass colour on top of its climate.
@@ -97,7 +101,7 @@ pub struct Biome {
 
 impl Default for Biome {
     fn default() -> Self {
-        Self { temperature: 0.8, downfall: 0.4, water: 0x3F76E4, grass: None, foliage: None, dry_foliage: None, modifier: Modifier::None, sky: Some(0x78A7FF), fog: None }
+        Self { temperature: 0.8, downfall: 0.4, water: 0x3F76E4, grass: None, foliage: None, dry_foliage: None, modifier: Modifier::None, sky: None, fog: None }
     }
 }
 
@@ -130,7 +134,7 @@ impl Biome {
                 Some("swamp") => Modifier::Swamp,
                 _ => Modifier::None,
             },
-            sky: color(attributes.and_then(|a| a.get("minecraft:visual/sky_color"))).or(plains.sky),
+            sky: color(attributes.and_then(|a| a.get("minecraft:visual/sky_color"))),
             fog: color(attributes.and_then(|a| a.get("minecraft:visual/fog_color"))),
         }
     }
@@ -153,20 +157,22 @@ const NOON: i64 = 6000;
 pub fn render(world: &impl Blocks, biomes: &[Biome], entities: &impl Entities, camera: &Camera, sky: &Sky, width: u32, height: u32, assets: &Assets) -> image::RgbaImage {
     let (w, h) = (width.clamp(1, MAX_SIDE) as usize, height.clamp(1, MAX_SIDE) as usize);
     let camera = &sane_camera(camera, world);
-    let sky = &Sky { time: sky.time, rain: unit(sky.rain), thunder: unit(sky.thunder) };
+    let env = sky.environment;
+    let weather = |v: f32| if env.follows_the_day() { unit(v) } else { 0.0 };
+    let sky = &Sky { time: sky.time, rain: weather(sky.rain), thunder: weather(sky.thunder), environment: env };
     let view = View::new(camera);
     let ticks = sky.time.unwrap_or(NOON);
     let time = ticks.rem_euclid(24000) as f32;
     let eye = camera.pos.map(|v| v.floor() as i32);
     let here = biomes.get(usize::from(world.biome(eye[0], eye[1], eye[2]))).cloned().unwrap_or_default();
     let distance = camera.distance.clamp(1, MAX_DISTANCE);
-    let air = Atmosphere::new(ticks, sky.rain, sky.thunder, &here, distance, view.forward, camera.pos[1]);
+    let air = Atmosphere::new(ticks, sky.rain, sky.thunder, &here, &env, distance, view.forward, camera.pos[1]);
     let end = f32::from(distance) * 16.0;
-    let fog = Fog { color: air.fog, start: end - (end / 10.0).clamp(4.0, 64.0), end, sphere: [-160.0 * sky.rain, 1024.0 - 256.0 * sky.rain] };
+    let fog = Fog { color: air.fog, start: end - (end / 10.0).clamp(4.0, 64.0), end, sphere: env.fog_range.unwrap_or([-160.0 * sky.rain, 1024.0 - 256.0 * sky.rain]) };
     let vertical = [view.right[1], view.up[1], view.forward[1]];
     let mut target = Target::new(w, h, camera.fov.clamp(10.0, 170.0), fog, vertical);
     sky::paint(&mut target, &view, &air, assets);
-    let lightmap = Lightmap::new(time, sky.rain, sky.thunder);
+    let lightmap = Lightmap::new(time, sky.rain, sky.thunder, &env);
     let mut scene = Scene::new(world, assets, biomes, camera.pos, i32::from(distance));
     let mut later = Later::default();
     scene.draw(&view, &lightmap, &mut target, &mut later);
@@ -178,7 +184,7 @@ pub fn render(world: &impl Blocks, biomes: &[Biome], entities: &impl Entities, c
     actor::hand(entities, &scene, assets, &lightmap, &view, &mut target);
     if let Some(texture) = &assets.vignette {
         let (sky_light, block_light) = world.light(eye[0], eye[1], eye[2]).unwrap_or((15, 0));
-        target.vignette(texture, light::vignette(sky_light, block_light, light::sky_level(time, sky.rain, sky.thunder)));
+        target.vignette(texture, light::vignette(sky_light, block_light, lightmap.sky_level()));
     }
     let mut out = image::RgbaImage::new(w as u32, h as u32);
     for (px, c) in out.pixels_mut().zip(&target.color) {
@@ -266,11 +272,29 @@ mod tests {
     }
 
     #[test]
+    fn the_nether_sky_is_the_biome_fog_and_the_end_sky_is_dark_and_not_blue() {
+        let Some(jar) = jar() else { return };
+        let assets = Assets::open(&jar).unwrap();
+        let camera = Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: -40.0, fov: 70.0, distance: 2 };
+        let at = |env: &str, biome: Biome| {
+            let environment = Environment::from_json(&serde_json::from_str(env).unwrap());
+            let sky = Sky { environment, ..Sky::default() };
+            render(&Flat, &[biome], &Nobody, &camera, &sky, 160, 90, &assets).get_pixel(80, 3).0
+        };
+        let nether = at(r##"{"skybox": "none", "attributes": {"minecraft:visual/sky_light_factor": 0.0}}"##, Biome { fog: Some(0x330808), sky: None, ..Biome::default() });
+        assert!(nether[0].abs_diff(0x33) <= 2 && nether[1].abs_diff(8) <= 2 && nether[2].abs_diff(8) <= 2, "{nether:?}");
+        let end = at(r##"{"skybox": "end", "attributes": {"minecraft:visual/fog_color": "#181318", "minecraft:visual/sky_color": "#000000"}}"##, Biome { sky: None, ..Biome::default() });
+        assert!(end[..3].iter().all(|c| *c < 60) && end[2] < end[0].max(end[1]).saturating_add(30), "{end:?}");
+        let day = at("{}", Biome::default());
+        assert!(day[2] > 200, "{day:?}");
+    }
+
+    #[test]
     fn odd_input_draws_a_picture_instead_of_failing() {
         let Some(jar) = jar() else { return };
         let assets = Assets::open(&jar).unwrap();
         let camera = Camera { pos: [f64::NAN, 1e12, f64::INFINITY], yaw: f32::NAN, pitch: 400.0, fov: f32::NAN, distance: 255 };
-        let sky = Sky { time: Some(i64::MIN), rain: f32::NAN, thunder: f32::INFINITY };
+        let sky = Sky { time: Some(i64::MIN), rain: f32::NAN, thunder: f32::INFINITY, ..Sky::default() };
         let image = render(&Flat, &[], &Nobody, &camera, &sky, 0, 100_000, &assets);
         assert_eq!(image.dimensions(), (1, MAX_SIDE));
         assert!(image.pixels().any(|p| p.0[..3] != [0, 0, 0]), "a camera put back on the map still sees something");
@@ -488,7 +512,7 @@ mod tests {
             };
             let fov = if f.len() > 7 { n(7) as f32 } else { 70.0 };
             let camera = Camera { pos: [x, y, z], yaw: n(4) as f32, pitch: n(5) as f32, fov, distance: 2 };
-            let sky = Sky { time: Some(n(6) as i64), rain: 0.0, thunder: 0.0 };
+            let sky = Sky { time: Some(n(6) as i64), rain: 0.0, thunder: 0.0, ..Sky::default() };
             let start = std::time::Instant::now();
             let crowd: Vec<Entity> = std::env::var("RENDER_ENTITIES").ok().map(|p| std::fs::read_to_string(p).unwrap().lines().filter(|l| l.starts_with(f[0])).filter_map(|l| crowd_entity(l.split_once(' ')?.1)).collect()).unwrap_or_default();
             let hand = std::env::var("RENDER_HAND").ok().map(|held| {

@@ -1,6 +1,7 @@
 //! Light the way the game computes it: smooth lighting (ambient occlusion with blended light per corner) for model faces,
 //! and the lightmap that turns sky and block light levels into a colour.
 
+use super::environment::{Cardinal, Environment};
 use super::model::Dir;
 
 /// Light as the game packs it: block light in bits 0..7 and sky light in bits 16..23, each a level times 16.
@@ -117,10 +118,11 @@ pub fn ambient(face: Dir, samples: &Samples, shape: &[f32; 12]) -> [(f32, Packed
 pub struct Lightmap {
     table: [[[f32; 3]; 16]; 16],
     darken: u8,
+    level: f32,
+    cardinal: Cardinal,
 }
 
 const NIGHT: [f32; 3] = [122.0 / 255.0, 122.0 / 255.0, 1.0];
-const AMBIENT: f32 = 10.0 / 255.0;
 const BLOCK_TINT: [f32; 3] = [1.0, 216.0 / 255.0, 140.0 / 255.0];
 const BLOCK_FACTOR: f32 = 1.4;
 const BRIGHTNESS: f32 = 0.5;
@@ -167,9 +169,12 @@ const SKY_FACTOR: [(f32, f32); 4] = [(730.0, 1.0), (11270.0, 1.0), (13140.0, 0.2
 const SKY_DAYLIGHT: [(f32, f32); 4] = [(730.0, 1.0), (11270.0, 1.0), (13140.0, 0.0), (22860.0, 0.0)];
 
 impl Lightmap {
-    pub fn new(time: f32, rain: f32, thunder: f32) -> Self {
-        let mut factor = track(&SKY_FACTOR, time);
-        let mut color = lerp3(track(&SKY_DAYLIGHT, time), NIGHT, [1.0; 3]);
+    /// The lightmap of a dimension: the overworld follows the day and the weather, the Nether and the End give a sky
+    /// light of one fixed colour and strength (none at all in either) on top of their ambient light.
+    pub fn new(time: f32, rain: f32, thunder: f32, env: &Environment) -> Self {
+        let (rain, thunder) = if env.follows_the_day() { (rain, thunder) } else { (0.0, 0.0) };
+        let mut factor = env.sky_factor.unwrap_or_else(|| track(&SKY_FACTOR, time));
+        let mut color = env.sky_light.unwrap_or_else(|| lerp3(track(&SKY_DAYLIGHT, time), NIGHT, [1.0; 3]));
         let wet = (rain - thunder).max(0.0);
         if wet > 0.0 {
             factor = lerp(wet, factor, lerp(0.3125, factor, 0.24));
@@ -187,13 +192,27 @@ impl Lightmap {
                 let sky = g(sl) * factor;
                 let block = g(bl) * BLOCK_FACTOR;
                 let warm = lerp3(0.9 * (2.0 * bl - 1.0).powi(2), BLOCK_TINT, [1.0; 3]);
-                let c = [0, 1, 2].map(|i| (AMBIENT + color[i] * sky + warm[i] * block).clamp(0.0, 1.0));
+                let c = [0, 1, 2].map(|i| (env.ambient[i] + color[i] * sky + warm[i] * block).clamp(0.0, 1.0));
                 let most = c[0].max(c[1]).max(c[2]);
                 let lifted = if most > 0.0 { c.map(|v| v * ((1.0 - (1.0 - most).powi(4)) / most)) } else { c };
                 *cell = lerp3(BRIGHTNESS, c, lifted);
             }
         }
-        Self { table, darken: (15.0 - sky_level(time, rain, thunder) + 1e-3).floor().clamp(0.0, 15.0) as u8 }
+        let level = env.sky_level.unwrap_or_else(|| if env.follows_the_day() { sky_level(time, rain, thunder) } else { 15.0 });
+        Self { table, darken: (15.0 - level + 1e-3).floor().clamp(0.0, 15.0) as u8, level, cardinal: env.cardinal }
+    }
+
+    /// How bright a face pointing `face` is drawn in this dimension.
+    pub fn shade(&self, face: Dir) -> f32 {
+        match (self.cardinal, face) {
+            (Cardinal::Nether, Dir::Up | Dir::Down) => 0.9,
+            _ => face.shade(),
+        }
+    }
+
+    /// The highest sky light level this dimension gives (0..15).
+    pub fn sky_level(&self) -> f32 {
+        self.level
     }
 
     /// The light level the game counts at a block with `sky` and `block` light: sky light dimmed by the time of day and weather.
@@ -217,6 +236,7 @@ impl Lightmap {
 
 #[cfg(test)]
 mod tests {
+    use super::super::environment::tests::{end, nether};
     use super::*;
 
     fn rgb(c: [f32; 3]) -> [u8; 3] {
@@ -225,15 +245,51 @@ mod tests {
 
     #[test]
     fn the_lightmap_matches_the_game_at_day_and_night() {
-        let day = Lightmap::new(6000.0, 0.0, 0.0);
+        let day = Lightmap::new(6000.0, 0.0, 0.0, &Environment::default());
         assert_eq!(rgb(day.color(pack(15, 0))), [255, 255, 255]);
         assert!(rgb(day.color(pack(0, 0)))[0].abs_diff(24) <= 1);
-        let night = Lightmap::new(18000.0, 0.0, 0.0);
+        let night = Lightmap::new(18000.0, 0.0, 0.0, &Environment::default());
         assert_eq!((day.level(15, 0), night.level(15, 0), night.level(15, 7)), (15, 4, 7));
         let n = rgb(night.color(pack(15, 0)));
         assert!(n[0].abs_diff(71) <= 1 && n[2].abs_diff(129) <= 1, "{n:?}");
         let torch = rgb(night.color(pack(0, 8)));
         assert!(torch[0].abs_diff(150) <= 1 && torch[2].abs_diff(90) <= 1, "{torch:?}");
+    }
+
+    #[test]
+    fn the_nether_lightmap_has_no_sky_and_a_warm_fixed_floor() {
+        let env = Environment::from_json(&nether());
+        let lit = Lightmap::new(6000.0, 0.0, 0.0, &env);
+        let (a, b) = (rgb(lit.color(pack(15, 0))), rgb(lit.color(pack(0, 0))));
+        assert_eq!(a, b, "sky light changes nothing");
+        assert!(b.iter().zip([96u8, 80, 66]).all(|(c, e)| c.abs_diff(e) <= 1), "the game lifts the ambient colour 302821 to {b:?}");
+        assert_eq!(rgb(Lightmap::new(18000.0, 0.0, 0.0, &env).color(pack(15, 0))), a, "time of day changes nothing");
+        assert_eq!(rgb(Lightmap::new(6000.0, 1.0, 1.0, &env).color(pack(15, 0))), a, "weather changes nothing");
+        assert_eq!(lit.level(15, 0), 4, "the sky counts as level 4");
+        assert!(rgb(lit.color(pack(0, 15)))[0] > a[0], "block light still lights");
+        assert_eq!((lit.shade(Dir::Up), lit.shade(Dir::Down), lit.shade(Dir::North)), (0.9, 0.9, 0.8));
+    }
+
+    #[test]
+    fn the_end_lightmap_is_sky_less_and_lighter_than_the_nether_floor() {
+        let env = Environment::from_json(&end());
+        let lit = Lightmap::new(18000.0, 0.0, 0.0, &env);
+        assert_eq!(rgb(lit.color(pack(15, 0))), rgb(lit.color(pack(0, 0))));
+        let c = rgb(lit.color(pack(0, 0)));
+        assert!(c.iter().zip([114u8, 128, 114]).all(|(c, e)| c.abs_diff(e) <= 1), "{c:?}");
+        assert_eq!(lit.shade(Dir::Up), 1.0);
+        let day = Lightmap::new(6000.0, 0.0, 0.0, &Environment::default());
+        assert_eq!((day.shade(Dir::Up), day.shade(Dir::Down)), (1.0, 0.5));
+    }
+
+    #[test]
+    fn a_dimension_without_a_day_ignores_the_clock_and_the_weather_in_its_sky_level() {
+        let end = Lightmap::new(18000.0, 1.0, 1.0, &Environment::from_json(&end()));
+        assert_eq!((end.sky_level(), end.level(15, 0)), (15.0, 15));
+        let nether = Lightmap::new(18000.0, 0.0, 0.0, &Environment::from_json(&nether()));
+        assert_eq!(nether.sky_level(), 4.0);
+        let night = Lightmap::new(18000.0, 0.0, 0.0, &Environment::default());
+        assert!((night.sky_level() - 4.0).abs() < 1e-5);
     }
 
     #[test]
