@@ -200,7 +200,7 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
             } else if again {
                 Phase::SignInWait { attempt: round + 1, of: SIGN_IN_ROUNDS }
             } else if transient {
-                Phase::Failed { reason: tr("Microsoft-Anmeldung antwortet nicht") }
+                Phase::Failed { reason: tr("Anmeldung gestört") }
             } else {
                 Phase::Failed { reason: reason.clone() }
             };

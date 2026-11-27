@@ -315,7 +315,8 @@ impl Flow {
     /// reason: a cut connection while the internet is there, "too many requests" (honouring Retry-After), a timeout or
     /// a server error. Up to five tries within about two minutes; after that it fails with [`AuthError::Unavailable`],
     /// and for a minute every other sign-in gives up on its first such failure. Throttling and server errors make all
-    /// requests wait; a failing proxy only slows its own account. Answers that end the sign-in are returned at once.
+    /// requests wait; a failing proxy only slows its own account and ends with its own error. Answers that end the
+    /// sign-in are returned at once.
     fn paced(&self, what: &str, send: impl Fn() -> Result<Reply>) -> Result<Reply> {
         let mut waited = Duration::ZERO;
         let mut own = Duration::ZERO;
@@ -327,7 +328,7 @@ impl Flow {
                 waited += wait;
             }
             tries += 1;
-            let (failure, next) = match send() {
+            let (failure, next, shared) = match send() {
                 Ok(reply) if !transient(&reply) => {
                     let mut pacing = self.pacing();
                     pacing.cooldown.answered();
@@ -337,22 +338,25 @@ impl Flow {
                 Ok(reply) => {
                     own = Duration::ZERO;
                     let next = self.pacing().cooldown.limited((self.clock)(), reply.retry_after, reconnect::unit());
-                    (anyhow!("{what} answered with status {}", reply.status), next)
+                    (anyhow!("{what} answered with status {}", reply.status), next, true)
                 }
                 Err(e) if net::no_connection(&e) && self.proxied => {
                     own = reconnect::wait(&PROXY_BACKOFF_SECS, tries - 1, 25, reconnect::unit());
-                    (e, own)
+                    (e, own, false)
                 }
                 Err(e) if net::no_connection(&e) && (self.reach)() => {
                     let next = self.pacing().cooldown.limited((self.clock)(), None, reconnect::unit());
-                    (e, next)
+                    (e, next, true)
                 }
                 Err(e) => return Err(e),
             };
             let now = (self.clock)();
             let mut pacing = self.pacing();
-            let down = pacing.down_until.is_some_and(|until| now < until);
+            let down = shared && pacing.down_until.is_some_and(|until| now < until);
             if down || tries >= RATE_ATTEMPTS || waited + next > RETRY_BUDGET {
+                if !shared {
+                    return Err(failure);
+                }
                 if !down {
                     pacing.down_until = Some(now + OUTAGE_HOLD);
                 }
@@ -1680,6 +1684,17 @@ mod tests {
         assert!(pauses().iter().sum::<Duration>() <= RETRY_BUDGET);
         assert!(unavailable(&fail(flow.session(&secret_tokens()))));
         assert_eq!(requests(&seen, "/xbl").len(), 6);
+    }
+
+    #[test]
+    fn a_dead_proxy_ends_with_its_own_error_and_slows_no_other_account() {
+        let (base, seen) = serve(chain(vec![(200, fixture!("xsts_ok"))], vec![(200, fixture!("mc_login_ok"))], vec![(DROP, "")]));
+        let proxied = Flow { proxied: true, ..flow(&base) };
+        let e = fail(proxied.session(&secret_tokens()));
+        assert!(net::no_connection(&e) && !unavailable(&e), "{e:#}");
+        assert_eq!(requests(&seen, "/mc/profile").len(), 5);
+        let (base, _) = serve(chain(vec![(503, "{}"), (200, fixture!("xsts_ok"))], vec![(200, fixture!("mc_login_ok"))], vec![(200, fixture!("profile_ok"))]));
+        assert!(Flow { proxied: false, ..flow(&base) }.session(&secret_tokens()).is_ok());
     }
 
     #[test]

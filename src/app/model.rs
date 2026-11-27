@@ -892,7 +892,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
         Phase::ServerAway { .. } => tr("Server weg · verbindet sich wieder, sobald er antwortet"),
         Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
-        Phase::SignInWait { attempt, of } => trf("Microsoft-Anmeldung gestört · neuer Versuch gleich (%lld von %lld)", &[attempt, of]),
+        Phase::SignInWait { attempt, of } => trf("Anmeldung gestört · neuer Versuch gleich (%lld von %lld)", &[attempt, of]),
         Phase::Offer { offer, .. } if offer.is_conduct() => tr("Server fragt nach seinen Regeln"),
         Phase::Offer { offer, .. } if offer.required => tr("Server verlangt ein Ressourcenpaket"),
         Phase::Offer { .. } => tr("Server bietet ein Ressourcenpaket an"),
