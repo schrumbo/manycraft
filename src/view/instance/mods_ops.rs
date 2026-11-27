@@ -18,9 +18,13 @@ use crate::view::commands::{Extra, Shortcut};
 use crate::view::icons::Icon;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::sheet;
-use crate::view::kit::{held, off_ui, toast};
+use crate::view::kit::{after, held, off_ui, toast};
+use crate::view::theme::frame;
 use crate::view::native;
 use crate::view::store::Store;
+
+/// How long rows that were just added stay washed in the accent.
+const FLASH: std::time::Duration = std::time::Duration::from_millis(2500);
 
 /// Puts `made` into the model when it differs from what the model holds.
 pub(super) fn publish(store: Store, made: Instance) {
@@ -533,6 +537,28 @@ impl Ctx {
         }
     }
 
+    /// What the tab does with files dropped on it: refuses while the list is locked.
+    pub(super) fn dropper(&self) -> impl Fn(Vec<PathBuf>) + 'static {
+        let ctx = self.clone();
+        move |paths| match ctx.locked() {
+            Some(why) => ctx.note(why),
+            None => ctx.dropped(paths),
+        }
+    }
+
+    pub(super) fn pick_jars(&self) {
+        if let Some(why) = self.locked() {
+            self.note(why);
+            return;
+        }
+        let ctx = self.clone();
+        spawn_in_window(async move {
+            let title = tr("Mods hinzufügen");
+            let Some(picked) = off_ui(move || native::pick_files(&title, &tr("Mods"), &["jar"], true)).await else { return };
+            ctx.dropped(picked);
+        });
+    }
+
     pub(super) fn dropped(&self, paths: Vec<PathBuf>) {
         let (jars, other): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("jar")));
         if !other.is_empty() {
@@ -542,29 +568,95 @@ impl Ctx {
             return;
         }
         self.settle();
-        let added: Vec<String> = jars.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
         let ctx = self.clone();
         spawn_in_window(async move {
             let id = ctx.id();
-            let work_id = id.clone();
-            match off_ui(move || content::add_files(&work_id, &jars)).await {
+            let (work_id, work) = (id.clone(), jars.clone());
+            match off_ui(move || content::add_files(&work_id, &work)).await {
                 Some(Ok((made, taken))) => {
+                    let added: Vec<String> = jars.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
                     let fresh: Vec<String> = added.into_iter().filter(|name| !taken.contains(name)).collect();
                     let first = fresh.first().cloned();
                     ctx.reveal.soft(|r| *r = first);
                     ctx.put(made);
-                    if !taken.is_empty() {
-                        ctx.note(trf("Schon da: %@.", &[&list::listing(&taken)]));
-                    }
                     if !fresh.is_empty() {
+                        ctx.flash_rows(&fresh);
                         let label = if let [one] = fresh.as_slice() { list::quoted(one) } else { list::count_mods(fresh.len()) };
-                        offer_added(ctx.store, id, fresh, label);
+                        offer_added(ctx.store, id, fresh.clone(), label);
                     }
+                    let clashes: Vec<PathBuf> = jars.into_iter().filter(|p| p.file_name().is_some_and(|n| taken.contains(&n.to_string_lossy().into_owned()) && !fresh.contains(&n.to_string_lossy().into_owned()))).collect();
+                    ctx.ask_replace(clashes);
                 }
                 Some(Err(e)) => ctx.fail(forms::explain_as(tr("Nicht hinzugefügt."), &e)),
                 None => ctx.fail(Problem::plain(forms::unexplained())),
             }
             ctx.rescan();
+        });
+    }
+
+    fn ask_replace(&self, jars: Vec<PathBuf>) {
+        let names: Vec<String> = jars.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
+        let heading = match names.as_slice() {
+            [] => return,
+            [one] => trf("%@ ersetzen?", &[&list::quoted(one)]),
+            many => trf("%lld Dateien ersetzen?", &[&many.len()]),
+        };
+        let message = match names.as_slice() {
+            [_] => tr("Es gibt schon eine Datei mit diesem Namen."),
+            _ => trf("Diese Namen gibt es schon: %@.", &[&list::listing(&names)]),
+        };
+        let (ctx, ui) = (self.clone(), self.store.ui);
+        let primary = sheet::Primary {
+            label: tr("Ersetzen"),
+            disabled: None,
+            danger: false,
+            busy: false,
+            run: EventHandler::new(move |_| {
+                sheet::close(ui);
+                ctx.replace_jars(jars.clone());
+            }),
+        };
+        sheet::open(ui, sheet::Card::new("instance.mods.replace", heading).message(message).primary(primary).primary_id("instance.mods.replace.ok").on_enter(move |_| sheet::close(ui)).width(frame::SHEET_NARROW));
+    }
+
+    fn replace_jars(&self, jars: Vec<PathBuf>) {
+        if let Some(why) = self.locked() {
+            self.note(why);
+            return;
+        }
+        self.settle();
+        let names: Vec<String> = jars.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
+        let ctx = self.clone();
+        spawn_in_window(async move {
+            let id = ctx.id();
+            match off_ui(move || content::replace_files(&id, &jars)).await {
+                Some(Ok(made)) => {
+                    let first = names.first().cloned();
+                    ctx.reveal.soft(|r| *r = first);
+                    ctx.put(made);
+                    ctx.flash_rows(&names);
+                    let label = if let [one] = names.as_slice() { list::quoted(one) } else { list::count_mods(names.len()) };
+                    ctx.note(trf("%@ ersetzt.", &[&label]));
+                }
+                Some(Err(e)) => ctx.fail(forms::explain_as(tr("Nicht ersetzt."), &e)),
+                None => ctx.fail(Problem::plain(forms::unexplained())),
+            }
+            ctx.rescan();
+        });
+    }
+
+    /// Washes the rows of `names` in the accent for a moment.
+    fn flash_rows(&self, names: &[String]) {
+        let mine: Rc<HashSet<String>> = Rc::new(names.iter().map(|n| n.to_lowercase()).collect());
+        let flash = self.flash;
+        flash.soft(|f| *f = mine.clone());
+        spawn_in_window(async move {
+            after(FLASH).await;
+            flash.soft(|f| {
+                if Rc::ptr_eq(f, &mine) {
+                    *f = Rc::new(HashSet::new());
+                }
+            });
         });
     }
 
@@ -631,6 +723,8 @@ impl Ctx {
         let ctx = self.clone();
         items.push(Item::new("instance.mods.more.updates", tr("Nach Updates suchen"), move |_| ctx.check_updates()).disabled(self.why_updates().is_some()));
         let ctx = self.clone();
+        items.push(Item::new("instance.mods.more.addfile", tr("Aus Datei hinzufügen…"), move |_| ctx.pick_jars()).disabled(self.locked().is_some()));
+        let ctx = self.clone();
         items.push(Item::new("instance.mods.more.folder", tr("Mods-Ordner öffnen"), move |_| ctx.open_folder()));
         if data.analysis.dups > 0 {
             let ctx = self.clone();
@@ -687,6 +781,7 @@ impl Ctx {
         push("disable", tr("Ausgewählte Mods ausschalten"), Icon::Minus, None, Ctx::why_none, Box::new(|c: &Ctx| c.switch(c.targets(), false)));
         push("delete", tr("Ausgewählte Mods löschen"), Icon::Close, None, Ctx::why_none, Box::new(|c: &Ctx| c.delete(c.targets())));
         push("updates", tr("Mod-Updates prüfen"), Icon::Refresh, None, Ctx::why_updates, Box::new(Ctx::check_updates));
+        push("addfile", tr("Mods aus Datei hinzufügen…"), Icon::Upload, Some(Shortcut::alt(Code::KeyO)), |_| None, Box::new(Ctx::pick_jars));
         push("copy", tr("Modliste kopieren"), Icon::Copy, None, Ctx::why_empty, Box::new(Ctx::copy_list));
         push("bisect", tr("Fehlerhaften Mod finden…"), Icon::Alert, None, Ctx::why_bisect, Box::new(Ctx::ask_bisect));
         if dups > 0 {

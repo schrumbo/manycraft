@@ -109,8 +109,8 @@ pub fn bring_into_view(row: usize, height: f32, view: f32, y: i32) -> Option<i32
     }
 }
 
-/// An empty, loading or failed state in the middle of the tab: a glyph, a heading, a line and the one action that helps.
-pub fn centered(t: &Theme, glyph: Icon, title: String, text: String, action: Option<Button>) -> Element {
+/// An empty, loading or failed state in the middle of the tab: a glyph, a heading, a line and the actions that help.
+pub fn centered(t: &Theme, glyph: Icon, title: String, text: String, actions: impl IntoIterator<Item = Button>) -> Element {
     let mut column = rect()
         .width(Size::fill())
         .height(Size::fill())
@@ -122,8 +122,9 @@ pub fn centered(t: &Theme, glyph: Icon, title: String, text: String, action: Opt
     if !text.is_empty() {
         column = column.child(rect().width(Size::fill()).max_width(Size::px(control::READING)).child(para(t, text, font::CALLOUT, t.text2).text_align(TextAlign::Center)));
     }
-    if let Some(action) = action {
-        column = column.child(action);
+    let actions: Vec<Element> = actions.into_iter().map(IntoElement::into_element).collect();
+    if !actions.is_empty() {
+        column = column.child(rect().horizontal().spacing(space::S).children(actions));
     }
     column.into_element()
 }

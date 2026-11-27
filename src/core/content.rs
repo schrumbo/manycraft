@@ -629,47 +629,92 @@ fn copy_into(from: &Path, mods: &Path, name: &str) -> Result<PathBuf> {
 }
 
 fn add_files_in(root: &Path, id: &str, paths: &[PathBuf]) -> Result<(Instance, Vec<String>)> {
+    exclusive(root, id, |dir, made| add_locked(root, dir, &made, paths))
+}
+
+fn jar_candidate(path: &Path) -> Option<&str> {
+    let name = path.file_name().and_then(|n| n.to_str())?;
+    (matches!(jar_name(name), Some((_, false))) && safe_file_name(name).is_ok() && path.is_file()).then_some(name)
+}
+
+fn add_locked(root: &Path, dir: &Path, made: &Instance, paths: &[PathBuf]) -> Result<(Instance, Vec<String>)> {
+    let mods = dir.join("mods");
+    std::fs::create_dir_all(&mods).with_context(|| format!("cannot create {}", mods.display()))?;
+    let mut taken: HashSet<String> = list_jars(&mods)?.into_keys().collect();
+    taken.extend(made.mods.iter().map(|m| key(&m.file_name)));
+    taken.extend(made.local_mods.iter().map(|n| key(n)));
+    let mut skipped: Vec<String> = Vec::new();
+    let mut added: Vec<String> = Vec::new();
+    let mut copied: Vec<PathBuf> = Vec::new();
+    let result = (|| -> Result<()> {
+        for path in paths {
+            let Some(name) = jar_candidate(path) else { continue };
+            let lower = key(name);
+            if taken.contains(&lower) {
+                skipped.push(name.to_owned());
+                continue;
+            }
+            copied.push(copy_into(path, &mods, name)?);
+            taken.insert(lower);
+            added.push(name.to_owned());
+        }
+        Ok(())
+    })();
+    let finished = result.and_then(|()| {
+        if added.is_empty() {
+            return Ok(made.clone());
+        }
+        let mut next = made.clone();
+        next.local_mods.extend(added.iter().cloned());
+        instance::save_in(root, &next)?;
+        Ok(next)
+    });
+    match finished {
+        Ok(next) => Ok((next, skipped)),
+        Err(e) => {
+            for path in &copied {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Like `add_files` for the `.jar` files `paths` whose names are already taken: each existing file (on or off) goes to the instance's mod trash and the new one takes its place, off again when the old one was off. The first file of a name counts. When the copy fails the old files are put back. Refused while a game of the instance runs.
+pub fn replace_files(id: &str, paths: &[PathBuf]) -> Result<Instance> {
+    replace_files_in(&instance::instances_dir(), id, paths, instance::now_millis())
+}
+
+fn replace_files_in(root: &Path, id: &str, paths: &[PathBuf], millis: u64) -> Result<Instance> {
     exclusive(root, id, |dir, made| {
-        let mods = dir.join("mods");
-        std::fs::create_dir_all(&mods).with_context(|| format!("cannot create {}", mods.display()))?;
-        let mut taken: HashSet<String> = list_jars(&mods)?.into_keys().collect();
+        if searching(dir) {
+            bail!(tr("Beende zuerst die Fehlersuche."));
+        }
+        let (made, _) = scan_locked(root, dir, made, None)?;
+        let mut taken: HashSet<String> = list_jars(&dir.join("mods"))?.into_keys().collect();
         taken.extend(made.mods.iter().map(|m| key(&m.file_name)));
         taken.extend(made.local_mods.iter().map(|n| key(n)));
-        let mut skipped: Vec<String> = Vec::new();
-        let mut added: Vec<String> = Vec::new();
-        let mut copied: Vec<PathBuf> = Vec::new();
-        let result = (|| -> Result<()> {
-            for path in paths {
-                let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-                if !matches!(jar_name(name), Some((_, false))) || safe_file_name(name).is_err() || !path.is_file() {
-                    continue;
-                }
-                let lower = key(name);
-                if taken.contains(&lower) {
-                    skipped.push(name.to_owned());
-                    continue;
-                }
-                copied.push(copy_into(path, &mods, name)?);
-                taken.insert(lower);
-                added.push(name.to_owned());
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut sources: Vec<PathBuf> = Vec::new();
+        for path in paths {
+            let Some(name) = jar_candidate(path) else { continue };
+            if taken.contains(&key(name)) && seen.insert(key(name)) {
+                names.push(name.to_owned());
+                sources.push(path.clone());
             }
-            Ok(())
-        })();
-        let finished = result.and_then(|()| {
-            if added.is_empty() {
-                return Ok(made.clone());
+        }
+        if names.is_empty() {
+            return Ok(made);
+        }
+        let (emptied, trashed) = trash_scanned(root, dir, &made, &names, millis)?;
+        match add_locked(root, dir, &emptied, &sources) {
+            Ok((next, _)) => {
+                let off: Vec<String> = next.disabled.iter().chain(&trashed.disabled).cloned().collect();
+                Ok(if trashed.disabled.is_empty() { next } else { commit(root, dir, &next, &off).unwrap_or(next) })
             }
-            let mut next = made.clone();
-            next.local_mods.extend(added.iter().cloned());
-            instance::save_in(root, &next)?;
-            Ok(next)
-        });
-        match finished {
-            Ok(next) => Ok((next, skipped)),
             Err(e) => {
-                for path in &copied {
-                    let _ = std::fs::remove_file(path);
-                }
+                let _ = untrash_locked(root, dir, &emptied, &trashed);
                 Err(e)
             }
         }
@@ -698,56 +743,60 @@ fn trash_in(root: &Path, id: &str, files: &[String], millis: u64) -> Result<(Ins
             bail!(tr("Beende zuerst die Fehlersuche."));
         }
         let (made, _) = scan_locked(root, dir, made, None)?;
-        let listed = resolve(&made, files)?;
-        let wanted: HashSet<String> = listed.iter().map(|n| key(n)).collect();
-        let folder = list_jars(&dir.join("mods"))?;
-        let trash = dir.join(TRASH);
-        let stamp = (millis..).find(|n| std::fs::symlink_metadata(trash.join(n.to_string())).is_err()).unwrap_or(millis);
-        let entry = trash.join(stamp.to_string());
-        std::fs::create_dir_all(&entry).with_context(|| format!("cannot create {}", entry.display()))?;
-        let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
-        let mut moved: Vec<String> = Vec::new();
-        for name in &listed {
-            if let Some(found) = folder.get(&key(name)) {
-                for path in found.on.iter().chain(&found.off) {
-                    let file = file_name_of(path);
-                    plan.push((path.clone(), entry.join(&file)));
-                    moved.push(file);
-                }
+        trash_scanned(root, dir, &made, files, millis)
+    })
+}
+
+fn trash_scanned(root: &Path, dir: &Path, made: &Instance, files: &[String], millis: u64) -> Result<(Instance, Trashed)> {
+    let listed = resolve(made, files)?;
+    let wanted: HashSet<String> = listed.iter().map(|n| key(n)).collect();
+    let folder = list_jars(&dir.join("mods"))?;
+    let trash = dir.join(TRASH);
+    let stamp = (millis..).find(|n| std::fs::symlink_metadata(trash.join(n.to_string())).is_err()).unwrap_or(millis);
+    let entry = trash.join(stamp.to_string());
+    std::fs::create_dir_all(&entry).with_context(|| format!("cannot create {}", entry.display()))?;
+    let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut moved: Vec<String> = Vec::new();
+    for name in &listed {
+        if let Some(found) = folder.get(&key(name)) {
+            for path in found.on.iter().chain(&found.off) {
+                let file = file_name_of(path);
+                plan.push((path.clone(), entry.join(&file)));
+                moved.push(file);
             }
         }
-        let moves = match apply(plan) {
-            Ok(moves) => moves,
-            Err(e) => {
-                let _ = std::fs::remove_dir(&entry);
-                return Err(e);
-            }
-        };
-        let taken = |name: &str| wanted.contains(&key(name));
-        let refs: Vec<(usize, ModRef)> = made.mods.iter().enumerate().filter(|(_, m)| taken(&m.file_name)).map(|(i, m)| (i, m.clone())).collect();
-        let next = Instance {
-            mods: made.mods.iter().filter(|m| !taken(&m.file_name)).cloned().collect(),
-            local_mods: made.local_mods.iter().filter(|n| !taken(n)).cloned().collect(),
-            disabled: made.disabled.iter().filter(|n| !taken(n)).cloned().collect(),
-            ..made.clone()
-        };
-        if let Err(e) = instance::save_in(root, &next) {
-            moves.undo();
+    }
+    let moves = match apply(plan) {
+        Ok(moves) => moves,
+        Err(e) => {
             let _ = std::fs::remove_dir(&entry);
             return Err(e);
         }
-        let trashed = Trashed {
-            entry: stamp.to_string(),
-            files: moved,
-            refs,
-            local: made.local_mods.iter().filter(|n| taken(n)).cloned().collect(),
-            disabled: made.disabled.iter().filter(|n| taken(n)).cloned().collect(),
-        };
-        if let Err(e) = serde_json::to_vec(&trashed).map_err(anyhow::Error::from).and_then(|bytes| std::fs::write(entry.join(TRASHED), bytes).map_err(Into::into)) {
-            eprintln!("mod trash {}: {e:#}", entry.display());
-        }
-        Ok((next, trashed))
-    })
+    };
+    let taken = |name: &str| wanted.contains(&key(name));
+    let refs: Vec<(usize, ModRef)> = made.mods.iter().enumerate().filter(|(_, m)| taken(&m.file_name)).map(|(i, m)| (i, m.clone())).collect();
+    let next = Instance {
+        mods: made.mods.iter().filter(|m| !taken(&m.file_name)).cloned().collect(),
+        local_mods: made.local_mods.iter().filter(|n| !taken(n)).cloned().collect(),
+        disabled: made.disabled.iter().filter(|n| !taken(n)).cloned().collect(),
+        ..made.clone()
+    };
+    if let Err(e) = instance::save_in(root, &next) {
+        moves.undo();
+        let _ = std::fs::remove_dir(&entry);
+        return Err(e);
+    }
+    let trashed = Trashed {
+        entry: stamp.to_string(),
+        files: moved,
+        refs,
+        local: made.local_mods.iter().filter(|n| taken(n)).cloned().collect(),
+        disabled: made.disabled.iter().filter(|n| taken(n)).cloned().collect(),
+    };
+    if let Err(e) = serde_json::to_vec(&trashed).map_err(anyhow::Error::from).and_then(|bytes| std::fs::write(entry.join(TRASHED), bytes).map_err(Into::into)) {
+        eprintln!("mod trash {}: {e:#}", entry.display());
+    }
+    Ok((next, trashed))
 }
 
 /// Puts back what `trash` took away. Refused for good (`instance::Final`) when a file of that name is there again or the entry is gone.
@@ -760,60 +809,64 @@ fn untrash_in(root: &Path, id: &str, trashed: &Trashed) -> Result<Instance> {
         if searching(dir) {
             bail!(tr("Beende zuerst die Fehlersuche."));
         }
-        let gone = || Final(tr("Diese Mods liegen nicht mehr im Papierkorb."));
-        let valid = !trashed.entry.is_empty() && trashed.entry.bytes().all(|b| b.is_ascii_digit());
-        let entry = dir.join(TRASH).join(&trashed.entry);
-        if !valid || !entry.is_dir() {
+        untrash_locked(root, dir, &made, trashed)
+    })
+}
+
+fn untrash_locked(root: &Path, dir: &Path, made: &Instance, trashed: &Trashed) -> Result<Instance> {
+    let gone = || Final(tr("Diese Mods liegen nicht mehr im Papierkorb."));
+    let valid = !trashed.entry.is_empty() && trashed.entry.bytes().all(|b| b.is_ascii_digit());
+    let entry = dir.join(TRASH).join(&trashed.entry);
+    if !valid || !entry.is_dir() {
+        bail!(gone());
+    }
+    let mods = dir.join("mods");
+    let folder = list_jars(&mods)?;
+    let again = |name: &str| Final(trf("Die Datei %@ gibt es wieder in der Instanz.", &[&name]));
+    let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for name in &trashed.files {
+        safe_file_name(name)?;
+        let from = entry.join(name);
+        if std::fs::symlink_metadata(&from).is_err() {
             bail!(gone());
         }
-        let mods = dir.join("mods");
-        let folder = list_jars(&mods)?;
-        let again = |name: &str| Final(trf("Die Datei %@ gibt es wieder in der Instanz.", &[&name]));
-        let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
-        for name in &trashed.files {
-            safe_file_name(name)?;
-            let from = entry.join(name);
-            if std::fs::symlink_metadata(&from).is_err() {
-                bail!(gone());
-            }
-            let base = jar_name(name).map_or(name.as_str(), |(base, _)| base);
-            if folder.contains_key(&key(base)) || std::fs::symlink_metadata(mods.join(name)).is_ok() {
-                bail!(again(base));
-            }
-            plan.push((from, mods.join(name)));
+        let base = jar_name(name).map_or(name.as_str(), |(base, _)| base);
+        if folder.contains_key(&key(base)) || std::fs::symlink_metadata(mods.join(name)).is_ok() {
+            bail!(again(base));
         }
-        let listed = |name: &str| made.mods.iter().any(|m| m.file_name.eq_ignore_ascii_case(name)) || made.local_mods.iter().any(|n| n.eq_ignore_ascii_case(name));
-        for name in trashed.refs.iter().map(|(_, m)| &m.file_name).chain(&trashed.local) {
-            if listed(name) {
-                bail!(again(name));
-            }
+        plan.push((from, mods.join(name)));
+    }
+    let listed = |name: &str| made.mods.iter().any(|m| m.file_name.eq_ignore_ascii_case(name)) || made.local_mods.iter().any(|n| n.eq_ignore_ascii_case(name));
+    for name in trashed.refs.iter().map(|(_, m)| &m.file_name).chain(&trashed.local) {
+        if listed(name) {
+            bail!(again(name));
         }
-        std::fs::create_dir_all(&mods).with_context(|| format!("cannot create {}", mods.display()))?;
-        let moves = apply(plan)?;
-        let mut next = made.clone();
-        let mut refs: Vec<&(usize, ModRef)> = trashed.refs.iter().collect();
-        refs.sort_by_key(|(at, _)| *at);
-        for (at, m) in refs {
-            next.mods.insert((*at).min(next.mods.len()), m.clone());
+    }
+    std::fs::create_dir_all(&mods).with_context(|| format!("cannot create {}", mods.display()))?;
+    let moves = apply(plan)?;
+    let mut next = made.clone();
+    let mut refs: Vec<&(usize, ModRef)> = trashed.refs.iter().collect();
+    refs.sort_by_key(|(at, _)| *at);
+    for (at, m) in refs {
+        next.mods.insert((*at).min(next.mods.len()), m.clone());
+    }
+    for name in &trashed.local {
+        if !next.local_mods.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            next.local_mods.push(name.clone());
         }
-        for name in &trashed.local {
-            if !next.local_mods.iter().any(|n| n.eq_ignore_ascii_case(name)) {
-                next.local_mods.push(name.clone());
-            }
+    }
+    for name in &trashed.disabled {
+        if !next.disabled.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            next.disabled.push(name.clone());
         }
-        for name in &trashed.disabled {
-            if !next.disabled.iter().any(|n| n.eq_ignore_ascii_case(name)) {
-                next.disabled.push(name.clone());
-            }
-        }
-        if let Err(e) = instance::save_in(root, &next) {
-            moves.undo();
-            return Err(e);
-        }
-        let _ = std::fs::remove_file(entry.join(TRASHED));
-        let _ = std::fs::remove_dir(&entry);
-        Ok(next)
-    })
+    }
+    if let Err(e) = instance::save_in(root, &next) {
+        moves.undo();
+        return Err(e);
+    }
+    let _ = std::fs::remove_file(entry.join(TRASHED));
+    let _ = std::fs::remove_dir(&entry);
+    Ok(next)
 }
 
 /// Deletes mod trash entries older than `older_than` in every instance.
@@ -1946,6 +1999,48 @@ mod tests {
         let blocked = outside(dir.path(), "blocked.jar", b"b");
         assert!(add_files_in(&root, &made.id, &[jar, blocked]).is_err());
         assert_eq!(mods_of(&root, &made), ["blocked.jar"]);
+        assert_eq!(saved(&root, &made), made);
+    }
+
+    #[test]
+    fn replacing_files_trashes_the_old_ones_keeps_them_off_and_ignores_names_not_taken() {
+        let (dir, root, mut made) = setup();
+        save_with(&root, &mut made, &[], &["a.jar", "b.jar"], &["b.jar"]);
+        put(&root, &made, "a.jar", b"old-a");
+        put(&root, &made, "b.jar.disabled", b"old-b");
+        let picked: Vec<PathBuf> = [("A.jar", &b"new-a"[..]), ("b.jar", b"new-b"), ("fresh.jar", b"new-c"), ("a.jar", b"again")]
+            .iter()
+            .enumerate()
+            .map(|(i, (name, bytes))| outside(&dir.path().join(i.to_string()), name, bytes))
+            .collect();
+        let now = replace_files_in(&root, &made.id, &picked, 5).unwrap();
+        assert_eq!(mods_of(&root, &made), ["A.jar", "b.jar.disabled"]);
+        let mods = crate::core::instance::dir_in(&root, &made.id).join("mods");
+        assert_eq!(std::fs::read(mods.join("A.jar")).unwrap(), b"new-a");
+        assert_eq!(std::fs::read(mods.join("b.jar.disabled")).unwrap(), b"new-b");
+        assert_eq!(now.disabled, ["b.jar"]);
+        assert_eq!(now.local_mods, ["A.jar", "b.jar"]);
+        assert_eq!(saved(&root, &made), now);
+        let trashed = crate::core::instance::dir_in(&root, &made.id).join(TRASH).join("5");
+        assert_eq!(std::fs::read(trashed.join("a.jar")).unwrap(), b"old-a");
+        assert_eq!(std::fs::read(trashed.join("b.jar.disabled")).unwrap(), b"old-b");
+        let (same, _) = (replace_files_in(&root, &made.id, &picked[2..3], 6).unwrap(), ());
+        assert_eq!(same, now);
+        assert_eq!(mods_of(&root, &made), ["A.jar", "b.jar.disabled"]);
+    }
+
+    #[test]
+    fn a_failed_replacement_puts_every_old_file_back() {
+        let (dir, root, mut made) = setup();
+        save_with(&root, &mut made, &[], &["a.jar", "b.jar"], &[]);
+        put(&root, &made, "a.jar", b"old-a");
+        put(&root, &made, "b.jar", b"old-b");
+        std::fs::create_dir(crate::core::instance::dir_in(&root, &made.id).join("mods").join("b.jar.manycraft-tmp")).unwrap();
+        let picked = [outside(&dir.path().join("0"), "a.jar", b"new-a"), outside(&dir.path().join("1"), "b.jar", b"new-b")];
+        assert!(replace_files_in(&root, &made.id, &picked, 5).is_err());
+        let mods = crate::core::instance::dir_in(&root, &made.id).join("mods");
+        assert_eq!(std::fs::read(mods.join("a.jar")).unwrap(), b"old-a");
+        assert_eq!(std::fs::read(mods.join("b.jar")).unwrap(), b"old-b");
         assert_eq!(saved(&root, &made), made);
     }
 }
