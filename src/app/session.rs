@@ -1,6 +1,6 @@
 //! What the core remembers about the running games between events: timer generations, processes, restarts, collected notifications.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use super::model::Phase;
@@ -77,6 +77,29 @@ pub struct Shot {
     pub width: u32,
 }
 
+/// One chat line of the user for one account; `ticket` tells the hold it belongs to apart from an older one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Line {
+    pub id: u64,
+    pub text: String,
+    pub ticket: u64,
+}
+
+/// Chat lines that wait for their account to get on a server, and those handed to an account that did not write them yet.
+#[derive(Default)]
+pub struct Outbox {
+    pub held: HashMap<String, VecDeque<Line>>,
+    pub handed: HashMap<String, Vec<Line>>,
+    pub tickets: u64,
+}
+
+impl Outbox {
+    /// Whether any line waits for or sits at the account `key`.
+    pub fn has(&self, key: &str) -> bool {
+        self.held.contains_key(key) || self.handed.contains_key(key)
+    }
+}
+
 /// The state of the running session that no view shows directly.
 #[derive(Default)]
 pub struct Session {
@@ -109,6 +132,10 @@ pub struct Session {
     pub joined: HashSet<String>,
     /// Join commands waiting for their game's resource pack offer to be answered.
     pub held_joins: HashMap<String, HeldJoin>,
+    /// The join generation whose commands are still being sent, per game: chat lines that waited go out after them.
+    pub join_pending: HashMap<String, u64>,
+    /// Chat lines of the user on their way to each account.
+    pub outbox: Outbox,
     /// Servers whose status ping is on its way or waits for its next turn.
     pub probes: HashSet<String>,
     /// Games a server's answer woke from waiting that have not reached it yet; their next drop spends a try.

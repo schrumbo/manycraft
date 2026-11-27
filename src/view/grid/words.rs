@@ -333,7 +333,7 @@ pub fn offers(keys: &[String], m: &Model) -> [Offer; 5] {
         offer("stop", tr("Stoppen"), stop, tr("nicht gestartet")),
         offer("restart", tr("Neu starten"), restart, tr("Anmeldung nötig oder wird gestoppt")),
         offer("reconnect", tr("Neu verbinden"), reconnect, tr("nicht im Spiel oder gesperrt")),
-        offer("message", tr("Nachricht senden…"), message, tr("auf keinem Server")),
+        offer("message", tr("Nachricht senden…"), message, tr("läuft nicht")),
     ]
 }
 

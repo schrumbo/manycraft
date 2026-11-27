@@ -451,10 +451,12 @@ fn on_state(m: &mut Model, env: &Env, fx: &mut Fx, key: String, kind: StateKind,
                     fx.phone.push((i.batch_id.clone(), Incident::new(&key, &i.name, What::Back, "", server.as_deref())));
                     if let Some((lines, delay)) = join {
                         let generation = *s.joins.entry(key.clone()).or_default();
+                        s.join_pending.insert(key.clone(), generation);
                         fx.later.push(Later::After(delay, Event::JoinDue { key: key.clone(), generation, lines, delay }));
                     }
                 } else if let Some(HeldJoin { lines, delay }) = held {
                     let generation = *s.joins.entry(key.clone()).or_default();
+                    s.join_pending.insert(key.clone(), generation);
                     fx.later.push(Later::After(delay, Event::JoinDue { key: key.clone(), generation, lines, delay }));
                 }
                 Phase::Playing { server: server_text, since: env.now }
@@ -749,7 +751,7 @@ fn on_message(m: &mut Model, env: &Env, key: String, message: FromMod, fx: &mut 
                 m.receive_chat(ChatLine { instance: key, account, batch, also: Vec::new(), at: env.unix, from, text, runs }, server.as_deref(), true, env.now, KEPT_CHAT);
             }
         }
-        FromMod::ChatOutcome { id, outcome } => said::outcome(m, &key, id, outcome),
+        FromMod::ChatOutcome { id, outcome } => said::outcome(m, &key, id, outcome, &mut fx.now),
         FromMod::Preview { .. } => {
             let s = &mut m.session;
             let recent = s.read_at.get(&key).is_some_and(|t| env.now.saturating_duration_since(*t) < OFFSCREEN_PREVIEW);
@@ -842,7 +844,10 @@ pub(super) fn join_due(m: &mut Model, key: String, generation: u64, mut lines: V
     }
     let text = lines.remove(0);
     out.push(Effect::Send { key: key.clone(), message: ToMod::ChatSend { text } });
-    if !lines.is_empty() {
+    if lines.is_empty() {
+        m.session.join_pending.remove(&key);
+        said::release(m, &key, out);
+    } else {
         out.push(Effect::After { delay, event: Box::new(Event::JoinDue { key, generation, lines, delay }) });
     }
 }

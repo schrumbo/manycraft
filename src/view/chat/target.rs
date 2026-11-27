@@ -60,14 +60,15 @@ pub fn reached(m: &Model, target: &Target) -> usize {
     }
 }
 
-/// The games a line to `target` is meant for: every one that runs, on a server or not, so those that miss it say why.
+/// The games a line to `target` is meant for: every one that is not stopped, on a server or not, so those on their way
+/// get it later and those that miss it say why.
 pub fn keys_of(m: &Model, target: &Target) -> Vec<String> {
     let meant = |g: &&crate::app::model::Game| match target {
         Target::All => true,
         Target::Batch(id) => g.batch_id == *id,
         Target::Instance(key) => g.key == *key,
     };
-    m.games.values().filter(|g| g.phase.is_running()).filter(meant).map(|g| g.key.clone()).collect()
+    m.games.values().filter(|g| g.phase != Phase::Stopped).filter(meant).map(|g| g.key.clone()).collect()
 }
 
 /// The short name of `target` for the composer: "Alle", the batch or the account.
@@ -244,6 +245,18 @@ mod tests {
 
     fn labels(list: &[Choice]) -> Vec<String> {
         list.iter().map(|c| c.label.clone()).collect()
+    }
+
+    #[test]
+    fn a_batch_line_is_meant_for_every_game_that_is_not_stopped() {
+        let mut m = world();
+        m.games.get_mut("k1").unwrap().phase = Phase::Restarting { attempt: 1, of: 3 };
+        m.games.get_mut("k2").unwrap().phase = Phase::Failed { reason: "x".into() };
+        let mut keys = keys_of(&m, &Target::Batch("farm".into()));
+        keys.sort();
+        assert_eq!(keys, ["k1", "k2"]);
+        assert_eq!(keys_of(&m, &Target::Instance("k3".into())), Vec::<String>::new());
+        assert_eq!(keys_of(&m, &Target::All).len(), 3);
     }
 
     #[test]

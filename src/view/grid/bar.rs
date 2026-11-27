@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use freya::prelude::*;
 
 use super::words;
+use crate::view::chat::summary;
 use crate::app::event::Event as AppEvent;
 use crate::core::i18n::{tr, trf};
 use crate::view::commands::Command;
@@ -37,11 +38,6 @@ pub fn messaging() -> bool {
 #[derive(PartialEq)]
 pub struct SelectionBar {}
 
-fn on_server(store: Store) -> Vec<String> {
-    let m = store.model.peek();
-    store.ui.selection.peek().iter().filter(|k| m.games.get(*k).is_some_and(|g| g.phase.can_chat())).cloned().collect()
-}
-
 impl Component for SelectionBar {
     fn render(&self) -> impl IntoElement {
         let t = use_theme();
@@ -53,7 +49,7 @@ impl Component for SelectionBar {
             MESSAGE.with(|m| m.set(Some(id)));
             id
         });
-        let mut sent = use_state(|| None::<usize>);
+        let mut sent = use_state(|| false);
         let mut move_at = use_state(Bounds::default);
         let keys: Vec<String> = ui.selection.read().iter().cloned().collect();
         let open = *ui.message.read();
@@ -61,7 +57,7 @@ impl Component for SelectionBar {
         use_side_effect_with_deps(&many, move |many| {
             if !many {
                 ui.message.set_if_modified(false);
-                sent.set_if_modified(None);
+                sent.set_if_modified(false);
             }
         });
         if !many {
@@ -74,8 +70,8 @@ impl Component for SelectionBar {
         let mut row = rect().horizontal().cross_align(Alignment::Center).spacing(space::XS).padding((space::XS, space::XS, space::XS, space::M));
         row = row.child(line(&t, trf("%lld ausgewählt", &[&keys.len()]), font::CALLOUT, t.text1).font_weight(FontWeight::SEMI_BOLD)).child(rect().width(Size::px(space::S)));
         if open {
-            let hint = match *sent.read() {
-                Some(n) => trf("An %lld Accounts gesendet · noch eine Nachricht…", &[&n]),
+            let hint = match store.model.read().said.as_ref().filter(|_| *sent.read()) {
+                Some(said) => format!("{} · {}", summary(said), tr("noch eine Nachricht…")),
                 None => trf("Nachricht an %lld Accounts…", &[&reach]),
             };
             let mut text_c = text;
@@ -92,11 +88,9 @@ impl Component for SelectionBar {
                             if s.is_empty() {
                                 return;
                             }
-                            let to = on_server(store);
-                            for key in &to {
-                                store.dispatch(AppEvent::SendChat { key: key.clone(), text: s.clone() });
-                            }
-                            sent.set(Some(to.len()));
+                            let keys: Vec<String> = store.ui.selection.peek().iter().cloned().collect();
+                            store.dispatch(AppEvent::Say { keys, text: s });
+                            sent.set(true);
                             text_c.set(String::new());
                         }),
                 )

@@ -190,14 +190,13 @@ fn send(store: Store, scope: &Option<String>) {
     if text.is_empty() {
         return;
     }
-    let (target, reach, keys) = {
+    let (target, keys) = {
         let m = store.model.peek();
         let target = target_of(&m, shared, scope);
-        let reach = target.as_ref().map_or(0, |t| reached(&m, t));
         let keys = target.as_ref().map(|t| keys_of(&m, t)).unwrap_or_default();
-        (target, reach, keys)
+        (target, keys)
     };
-    let problem = line_problem(&text).or_else(|| target.is_none().then(|| tr("Wähle, wer sendet."))).or_else(|| (reach == 0).then(|| tr("Dort ist gerade niemand im Spiel.")));
+    let problem = line_problem(&text).or_else(|| target.is_none().then(|| tr("Wähle, wer sendet."))).or_else(|| keys.is_empty().then(|| tr("Dort läuft gerade kein Account.")));
     if let Some(problem) = problem {
         shared.rejected.set(Some((text, problem)));
         shared.sent.set(false);
@@ -220,11 +219,15 @@ fn send(store: Store, scope: &Option<String>) {
 }
 
 /// What became of the line sent last, as the one line under the field says it.
-fn summary(said: &Said) -> String {
+pub(crate) fn summary(said: &Said) -> String {
     let (sent, waiting, unconfirmed, missed) = said.counts();
+    let held = said.held();
     let mut parts = Vec::new();
-    if sent > 0 || (waiting + unconfirmed + missed == 0) {
+    if sent > 0 || (waiting + unconfirmed + missed + held == 0) {
         parts.push(trf("An %lld gesendet", &[&sent]));
+    }
+    if held > 0 {
+        parts.push(if held == 1 { tr("1 wartet auf den Server") } else { trf("%lld warten auf den Server", &[&held]) });
     }
     if waiting > 0 {
         parts.push(if waiting == 1 { tr("1 wartet noch") } else { trf("%lld warten noch", &[&waiting]) });
@@ -254,6 +257,8 @@ fn refusal_text(why: ChatRefusal) -> String {
         ChatRefusal::TooLong => tr("Zeile zu lang"),
         ChatRefusal::BadText => tr("enthält Zeichen, die der Server ablehnt"),
         ChatRefusal::Dropped => tr("Verbindung weg, bevor die Zeile dran war"),
+        ChatRefusal::NotRunning => tr("läuft nicht"),
+        ChatRefusal::Expired => tr("zu spät, nicht mehr gesendet"),
         ChatRefusal::Failed => tr("Verbindung zum Spiel gestört"),
     }
 }
@@ -1131,13 +1136,13 @@ impl Component for Composer {
         });
         let m = store.model.read();
         let target = target_of(&m, shared, &self.scope);
-        let reach = target.as_ref().map_or(0, |tg| reached(&m, tg));
+        let meant = target.as_ref().map_or(0, |tg| keys_of(&m, tg).len());
         let all = choices(&m, self.scope.as_deref());
         let suggest = at_query(&draft).filter(|_| shared.at_closed.read().as_deref() != Some(draft.as_str())).map(|q| (q.is_empty(), filter(&all, q)));
         let absent = match &target {
             None => Some(tr("Der gewählte Absender ist weg. Wähle, wer sendet.")),
-            Some(tg @ Target::Instance(_)) if reach == 0 => Some(trf("%@ ist gerade nicht im Spiel.", &[&name(&m, tg)])),
-            Some(tg) if reach == 0 => Some(trf("%@: gerade ist niemand im Spiel.", &[&name(&m, tg)])),
+            Some(tg @ Target::Instance(_)) if meant == 0 => Some(trf("%@ ist gerade nicht im Spiel.", &[&name(&m, tg)])),
+            Some(tg) if meant == 0 => Some(trf("%@: gerade ist niemand im Spiel.", &[&name(&m, tg)])),
             Some(_) => None,
         };
         let said = if *shared.sent.read() { m.said.clone() } else { None };

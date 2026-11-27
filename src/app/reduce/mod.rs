@@ -198,11 +198,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
             }
         }
         Event::Say { keys, text } => said::say(model, &keys, text, &mut out),
-        Event::Broadcast { batch, text } => {
-            for i in model.games.values().filter(|i| i.batch_id == batch && i.phase.can_chat()) {
-                out.push(Effect::Send { key: i.key.clone(), message: crate::core::ipc::ToMod::ChatSend { text: text.clone() } });
-            }
-        }
+        Event::HoldExpired { key, id, ticket } => said::expire(model, &key, id, ticket, &mut out),
         Event::Recolor { ids, color } => {
             for account in model.accounts.iter_mut().filter(|account| ids.contains(&account.id)) {
                 account.color = Some(color);
@@ -264,9 +260,7 @@ fn go(m: &mut Model, key: &str, to: Phase, why: Why, out: &mut Vec<Effect>) -> b
         return false;
     }
     i.phase = to;
-    if !i.phase.can_chat() {
-        said::drop_waiting(m, key);
-    }
+    said::moved(m, key, out);
     true
 }
 

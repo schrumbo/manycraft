@@ -109,6 +109,10 @@ pub enum ChatRefusal {
     BadText,
     /// The account disconnected before its turn came.
     Dropped,
+    /// The account is not running and nothing brings it back by itself.
+    NotRunning,
+    /// The line waited for the account to get on a server and it never did in time.
+    Expired,
     /// The connection failed while writing it, or a newer game reports a reason this version does not know.
     #[serde(other)]
     Failed,

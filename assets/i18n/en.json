@@ -1705,7 +1705,6 @@
   "Account oder Batch suchen": "Search accounts or batches",
   "An alle senden": "Send to Everyone",
   "Beim Betreten sendet jeder Account: %@": "On joining, every account sends: %@",
-  "Dort ist gerade niemand im Spiel.": "Nobody there is in the game right now.",
   "Senden als": "Send as",
   "Senden als · Enter wählt · Esc schließt": "Send as · Enter picks · Esc closes",
   "Senden als …": "Send As…",
@@ -2423,5 +2422,11 @@
   "Beende sie vorher, wenn du das nicht willst.": "Quit them first if you don't want that.",
   "Geschützte Spiele verlieren ihre Anmeldung": "Protected games lose their login",
   "Trotzdem neu starten": "Restart Anyway",
-  "Ein Spiel dieser Instanz läuft. Was du umstellst, gilt ab seinem nächsten Start.": "A game of this instance is running. What you change applies from its next start."
+  "Ein Spiel dieser Instanz läuft. Was du umstellst, gilt ab seinem nächsten Start.": "A game of this instance is running. What you change applies from its next start.",
+  "1 wartet auf den Server": "1 waiting for the server",
+  "%lld warten auf den Server": "%lld waiting for the server",
+  "läuft nicht": "isn’t running",
+  "zu spät, nicht mehr gesendet": "too late, not sent anymore",
+  "Dort läuft gerade kein Account.": "No account is running there.",
+  "noch eine Nachricht…": "another message…"
 }

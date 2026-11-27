@@ -440,8 +440,7 @@ mod tests {
         report(&mut m, &s, state(&key, StateKind::Playing, Some("mc.example:25565"), None));
         let fx = run(&mut m, &s, Instant::now(), Event::SendChat { key: key.clone(), text: "/home".into() });
         assert!(fx.iter().any(|e| matches!(e, Effect::Send { message: ToMod::ChatSend { text }, .. } if text == "/home")));
-        let batch = m.batches[0].id.clone();
-        let fx = run(&mut m, &s, Instant::now(), Event::Broadcast { batch, text: "hi".into() });
-        assert!(fx.iter().any(|e| matches!(e, Effect::Send { key: k, message: ToMod::ChatSend { .. } } if *k == key)));
+        let fx = run(&mut m, &s, Instant::now(), Event::Say { keys: vec![key.clone()], text: "hi".into() });
+        assert!(fx.iter().any(|e| matches!(e, Effect::Send { key: k, message: ToMod::ChatLine { .. } } if *k == key)));
     }
 }
