@@ -1,24 +1,21 @@
 //! What the server shows the player, kept for the manager's Bildschirm: the map in hand, the open menu and the titles.
-//! The player's own inventory is read only for the ids of the maps in it and the stacks in its hands. Pictures of those maps are kept while they are
-//! carried, of any other map at most [`MAX_MAPS`] for a few seconds; nothing else of the world is kept.
+//! The player's own inventory is read only for the ids of the maps in it and the stacks in its hands; the pictures of those maps
+//! live in [`Maps`]. Nothing else of the world is kept.
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, ensure};
 
 use super::item::{self, Stack};
+use super::maps::Maps;
 use super::render::hud;
 use super::status::ticks;
 use super::text::{self, Line};
-use super::v777::{ITEMS, MAP_COLORS, MENUS, play};
+use super::v777::{ITEMS, MENUS, play};
 use super::wire::{In, Out};
 use crate::core::chat_text::Run;
 use crate::core::ipc::{Click, FromMod, MapPicture, Menu, Slot, Titles, Words};
 
-/// The side of a map picture in pixels.
-pub const SIDE: usize = 128;
-const PIXELS: usize = SIDE * SIDE;
-const MAX_MAPS: usize = 4;
 const MAX_SLOTS: usize = 256;
 const INVENTORY: usize = 46;
 const HOTBAR: usize = 36;
@@ -30,12 +27,6 @@ const AIR: i32 = 0;
 const NEVER_HELD: i32 = -1;
 const FADES: [i32; 3] = [10, 70, 20];
 const ACTION_BAR_TICKS: i32 = 60;
-
-struct Picture {
-    id: i32,
-    colors: Box<[u8]>,
-    touched: Instant,
-}
 
 struct Open {
     id: i32,
@@ -52,7 +43,6 @@ pub struct Screen {
     held: usize,
     inventory: Vec<Option<i32>>,
     hands: [Option<Stack>; 10],
-    pictures: Vec<Picture>,
     menu: Option<Open>,
     carried: Option<Stack>,
     titles: Titles,
@@ -69,7 +59,7 @@ impl Screen {
     /// Whether `id` is a packet this screen reads.
     pub fn reads(id: i32) -> bool {
         use play::clientbound as c;
-        [c::OPEN_SCREEN, c::CONTAINER_SET_CONTENT, c::CONTAINER_SET_SLOT, c::CONTAINER_CLOSE, c::SET_CURSOR_ITEM, c::SET_PLAYER_INVENTORY, c::SET_HELD_SLOT, c::MAP_ITEM_DATA, c::SET_TITLE_TEXT, c::SET_SUBTITLE_TEXT, c::SET_ACTION_BAR_TEXT, c::CLEAR_TITLES, c::SET_TITLES_ANIMATION].contains(&id)
+        [c::OPEN_SCREEN, c::CONTAINER_SET_CONTENT, c::CONTAINER_SET_SLOT, c::CONTAINER_CLOSE, c::SET_CURSOR_ITEM, c::SET_PLAYER_INVENTORY, c::SET_HELD_SLOT, c::SET_TITLE_TEXT, c::SET_SUBTITLE_TEXT, c::SET_ACTION_BAR_TEXT, c::CLEAR_TITLES, c::SET_TITLES_ANIMATION].contains(&id)
     }
 
     /// Takes in packet `id`. A packet it cannot read leaves the rest as it was; an unreadable menu shows as such.
@@ -99,7 +89,6 @@ impl Screen {
                 self.map_dirty = true;
                 Ok(())
             }
-            c::MAP_ITEM_DATA => self.map(r),
             c::SET_TITLE_TEXT => {
                 self.title(&text::line(&r.nbt()?), |t| &mut t.title);
                 self.title_at = Some(Instant::now());
@@ -138,13 +127,14 @@ impl Screen {
     }
 
     /// What changed since the last call, as messages for the manager.
-    pub fn changes(&mut self) -> Vec<FromMod> {
+    pub fn changes(&mut self, maps: &Maps) -> Vec<FromMod> {
         let mut out = Vec::new();
         if std::mem::take(&mut self.map_dirty) {
-            let mark = self.shown_picture().map(|p| (p.id, fingerprint(&p.colors)));
+            let picture = self.hand().and_then(|id| maps.get(id).map(|colors| (id, colors)));
+            let mark = picture.map(|(id, colors)| (id, fingerprint(&colors[..])));
             if mark != self.shown {
                 self.shown = mark;
-                out.push(FromMod::Map { map: self.shown_picture().map(|p| MapPicture { id: p.id, colors: p.colors.to_vec() }) });
+                out.push(FromMod::Map { map: picture.map(|(id, colors)| MapPicture { id, colors: colors.to_vec() }) });
             }
         }
         if std::mem::take(&mut self.menu_dirty) {
@@ -213,7 +203,7 @@ impl Screen {
             self.inventory = vec![None; INVENTORY];
             self.hands = Default::default();
             self.set_inventory(stacks.into_iter().enumerate());
-            self.inventory_changed();
+            self.map_dirty = true;
             return Ok(());
         }
         let Some(open) = self.menu.as_mut().filter(|m| m.id == window) else { return Ok(()) };
@@ -296,15 +286,18 @@ impl Screen {
             }
         }
         if changed {
-            self.inventory_changed();
+            self.map_dirty = true;
         }
     }
 
-    fn inventory_changed(&mut self) {
-        let carried: Vec<i32> = self.inventory.iter().flatten().copied().collect();
-        let fresh = Instant::now();
-        self.pictures.retain(|p| carried.contains(&p.id) || fresh.duration_since(p.touched).as_secs() < 5);
-        self.map_dirty = true;
+    /// The ids of the maps the player carries.
+    pub fn carried(&self) -> impl Iterator<Item = i32> + '_ {
+        self.inventory.iter().flatten().copied()
+    }
+
+    /// Notes that the picture of map `id` changed.
+    pub fn map_changed(&mut self, id: i32) {
+        self.map_dirty |= self.hand() == Some(id);
     }
 
     fn hand(&self) -> Option<i32> {
@@ -343,54 +336,6 @@ impl Screen {
         self.hands.get(self.held)?.as_ref()
     }
 
-    fn shown_picture(&self) -> Option<&Picture> {
-        let id = self.hand()?;
-        self.pictures.iter().find(|p| p.id == id)
-    }
-
-    fn map(&mut self, r: &mut In) -> Result<()> {
-        let id = r.varint()?;
-        let _scale = r.u8()?;
-        let _locked = r.bool()?;
-        if r.bool()? {
-            for _ in 0..r.varint()? {
-                let _kind = r.varint()?;
-                r.take(3)?;
-                let _name = r.optional_nbt()?;
-            }
-        }
-        let width = usize::from(r.u8()?);
-        if width == 0 {
-            return Ok(());
-        }
-        let height = usize::from(r.u8()?);
-        let (x0, y0) = (usize::from(r.u8()?), usize::from(r.u8()?));
-        let colors = r.bytes()?.to_vec();
-        ensure!(x0 + width <= SIDE && y0 + height <= SIDE && colors.len() == width * height, "map patch out of bounds");
-        let carried: Vec<i32> = self.inventory.iter().flatten().copied().collect();
-        self.pictures.retain(|p| p.id == id || carried.contains(&p.id) || p.touched.elapsed().as_secs() < 5);
-        let at = match self.pictures.iter().position(|p| p.id == id) {
-            Some(at) => at,
-            None => {
-                let loose = |p: &Picture| !carried.contains(&p.id);
-                if !carried.contains(&id) && self.pictures.iter().filter(|p| loose(p)).count() >= MAX_MAPS {
-                    let Some(oldest) = self.pictures.iter().enumerate().filter(|(_, p)| loose(p)).min_by_key(|(_, p)| p.touched).map(|(i, _)| i) else { return Ok(()) };
-                    self.pictures.remove(oldest);
-                }
-                self.pictures.push(Picture { id, colors: vec![0; PIXELS].into_boxed_slice(), touched: Instant::now() });
-                self.pictures.len() - 1
-            }
-        };
-        let picture = &mut self.pictures[at];
-        picture.touched = Instant::now();
-        for y in 0..height {
-            let row = (y0 + y) * SIDE + x0;
-            picture.colors[row..row + width].copy_from_slice(&colors[y * width..(y + 1) * width]);
-        }
-        self.map_dirty |= self.hand() == Some(id);
-        Ok(())
-    }
-
     fn title(&mut self, line: &Line, field: impl Fn(&mut Titles) -> &mut Option<Words>) {
         let words = (!line.text.trim().is_empty()).then(|| words(line));
         let slot = field(&mut self.titles);
@@ -423,11 +368,6 @@ fn fingerprint(colors: &[u8]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     colors.hash(&mut h);
     h.finish()
-}
-
-/// The picture of map colour ids `colors` as RGBA rows, top-down.
-pub fn rgba(colors: &[u8]) -> Vec<u8> {
-    colors.iter().flat_map(|c| MAP_COLORS[usize::from(*c)]).collect()
 }
 
 fn words(line: &Line) -> Words {
@@ -509,10 +449,14 @@ mod tests {
         .unwrap();
     }
 
-    fn patch(s: &mut Screen, id: i32, x: u8, y: u8, colors: &[u8]) -> Result<()> {
-        feed(s, play::clientbound::MAP_ITEM_DATA, |o| {
-            o.varint(id).u8(0).bool(false).bool(false).u8(u8::try_from(colors.len()).unwrap()).u8(1).u8(x).u8(y).varint(i32::try_from(colors.len()).unwrap()).raw(colors);
-        })
+    fn patch(s: &mut Screen, m: &mut Maps, id: i32, x: u8, y: u8, colors: &[u8]) -> Result<()> {
+        let mut o = Out::default();
+        o.varint(id).u8(0).bool(false).bool(false).u8(u8::try_from(colors.len()).unwrap()).u8(1).u8(x).u8(y).varint(i32::try_from(colors.len()).unwrap()).raw(colors);
+        let carried: Vec<i32> = s.carried().collect();
+        if let Some(id) = m.read(&mut In::new(&o.0), |id| carried.contains(&id))? {
+            s.map_changed(id);
+        }
+        Ok(())
     }
 
     fn shown_map(changes: &[FromMod]) -> Option<Option<&MapPicture>> {
@@ -554,51 +498,48 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn map_colours_come_from_the_game() {
-        assert_eq!(MAP_COLORS[50], [0x40, 0x40, 0xFF, 0xFF]);
-        assert!(MAP_COLORS[..4].iter().all(|c| c[3] == 0));
-        assert_eq!(rgba(&[50, 0]), vec![0x40, 0x40, 0xFF, 0xFF, 0, 0, 0, 0]);
-    }
 
     #[test]
     fn a_map_in_hand_shows_with_its_patch_in_place() {
         let mut s = Screen::default();
-        patch(&mut s, 7, 3, 4, &[50, 51]).unwrap();
-        assert_eq!(shown_map(&s.changes()), None);
+        let mut m = Maps::default();
+        patch(&mut s, &mut m, 7, 3, 4, &[50, 51]).unwrap();
+        assert_eq!(shown_map(&s.changes(&m)), None);
         inventory(&mut s, Some(7));
-        let changes = s.changes();
+        let changes = s.changes(&m);
         let picture = shown_map(&changes).flatten().unwrap();
-        assert_eq!((picture.id, picture.colors.len()), (7, PIXELS));
-        assert_eq!(&picture.colors[4 * SIDE + 3..4 * SIDE + 5], &[50, 51]);
-        assert!(patch(&mut s, 7, 127, 0, &[1, 2]).is_err());
-        assert_eq!(shown_map(&s.changes()), None);
+        assert_eq!((picture.id, picture.colors.len()), (7, 128 * 128));
+        assert_eq!(&picture.colors[4 * 128 + 3..4 * 128 + 5], &[50, 51]);
+        assert!(patch(&mut s, &mut m, 7, 127, 0, &[1, 2]).is_err());
+        assert_eq!(shown_map(&s.changes(&m)), None);
     }
 
     #[test]
     fn switching_the_held_slot_or_the_offhand_moves_the_map() {
         let mut s = Screen::default();
+        let mut m = Maps::default();
         inventory(&mut s, Some(7));
-        patch(&mut s, 7, 0, 0, &[50]).unwrap();
-        assert!(shown_map(&s.changes()).flatten().is_some());
+        patch(&mut s, &mut m, 7, 0, 0, &[50]).unwrap();
+        assert!(shown_map(&s.changes(&m)).flatten().is_some());
         feed(&mut s, play::clientbound::SET_HELD_SLOT, |o| {
             o.varint(1);
         })
         .unwrap();
-        assert_eq!(shown_map(&s.changes()), Some(None));
+        assert_eq!(shown_map(&s.changes(&m)), Some(None));
         feed(&mut s, play::clientbound::SET_PLAYER_INVENTORY, |o| {
             o.varint(40);
             map(o, 7);
         })
         .unwrap();
-        assert_eq!(shown_map(&s.changes()).flatten().map(|p| p.id), Some(7));
+        assert_eq!(shown_map(&s.changes(&m)).flatten().map(|p| p.id), Some(7));
     }
 
     #[test]
     fn a_menu_keeps_its_slots_and_reads_the_inventory_below_it() {
         let mut s = Screen::default();
+        let m = Maps::default();
         chest(&mut s);
-        let changes = s.changes();
+        let changes = s.changes(&m);
         let menu = shown_menu(&changes).flatten().unwrap();
         assert_eq!((menu.id, menu.kind.as_str(), menu.columns, menu.top, menu.slots.len(), menu.readable), (3, "generic_9x1", 9, 9, 45, true));
         assert_eq!(menu.title.text, "Captcha");
@@ -610,7 +551,7 @@ mod tests {
             o.varint(0);
         })
         .unwrap();
-        let changes = s.changes();
+        let changes = s.changes(&m);
         assert!(shown_menu(&changes).flatten().unwrap().slots[0].is_none());
         assert_eq!(s.click(3, 0, Click::Left).unwrap().0[1], 6);
     }
@@ -618,6 +559,7 @@ mod tests {
     #[test]
     fn clicks_encode_the_vanilla_container_click() {
         let mut s = Screen::default();
+        let m = Maps::default();
         chest(&mut s);
         let cursor = [1, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0, 0];
         assert_eq!(s.click(3, 0, Click::Left).unwrap().0, [&[3, 5, 0, 0, 0, 0, 0][..], &cursor].concat());
@@ -631,17 +573,19 @@ mod tests {
     #[test]
     fn closing_sends_the_menu_and_forgets_it() {
         let mut s = Screen::default();
+        let m = Maps::default();
         chest(&mut s);
-        s.changes();
+        s.changes(&m);
         assert!(s.close(4).is_none());
         assert_eq!(s.close(3).unwrap().0, [3]);
-        assert_eq!(shown_menu(&s.changes()), Some(None));
+        assert_eq!(shown_menu(&s.changes(&m)), Some(None));
         assert!(s.click(3, 0, Click::Left).is_none());
     }
 
     #[test]
     fn an_unreadable_menu_stays_open_without_slots() {
         let mut s = Screen::default();
+        let m = Maps::default();
         feed(&mut s, play::clientbound::OPEN_SCREEN, |o| {
             o.varint(3).varint(0);
             text(o, "Odd");
@@ -651,7 +595,7 @@ mod tests {
             o.varint(3).varint(1).varint(1).varint(1).varint(item("stone")).varint(1).varint(0).varint(999);
         });
         assert!(broken.is_err());
-        let changes = s.changes();
+        let changes = s.changes(&m);
         let menu = shown_menu(&changes).flatten().unwrap();
         assert!(!menu.readable && menu.slots.is_empty());
         assert!(s.close(3).is_some());
@@ -660,28 +604,30 @@ mod tests {
     #[test]
     fn a_menu_claiming_more_slots_than_any_menu_has_is_unreadable() {
         let mut s = Screen::default();
+        let m = Maps::default();
         chest(&mut s);
-        s.changes();
+        s.changes(&m);
         let err = feed(&mut s, play::clientbound::CONTAINER_SET_CONTENT, |o| {
             o.varint(3).varint(6).varint(100_000);
             o.raw(&[0; 100_000]);
             o.varint(0);
         });
         assert!(err.is_err());
-        assert!(matches!(shown_menu(&s.changes()), Some(Some(m)) if !m.readable && m.slots.is_empty()));
+        assert!(matches!(shown_menu(&s.changes(&m)), Some(Some(m)) if !m.readable && m.slots.is_empty()));
     }
 
     #[test]
     fn titles_stay_until_cleared_and_the_actionbar_survives_a_clear() {
         let mut s = Screen::default();
+        let m = Maps::default();
         feed(&mut s, play::clientbound::SET_TITLE_TEXT, |o| text(o, "Solve")).unwrap();
         feed(&mut s, play::clientbound::SET_ACTION_BAR_TEXT, |o| text(o, "/captcha <code>")).unwrap();
-        let changes = s.changes();
+        let changes = s.changes(&m);
         let titles = changes.iter().find_map(|c| if let FromMod::Titles { titles } = c { Some(titles.clone()) } else { None }).unwrap();
         assert_eq!(titles.title.unwrap().text, "Solve");
         assert_eq!(titles.actionbar.unwrap().text, "/captcha <code>");
         feed(&mut s, play::clientbound::SET_TITLE_TEXT, |o| text(o, "Solve")).unwrap();
-        assert!(s.changes().is_empty());
+        assert!(s.changes(&m).is_empty());
         feed(&mut s, play::clientbound::CLEAR_TITLES, |o| {
             o.bool(false);
         })
@@ -692,6 +638,7 @@ mod tests {
     #[test]
     fn the_display_shows_titles_for_their_fade_times_and_the_action_bar_for_three_seconds() {
         let mut s = Screen::default();
+        let m = Maps::default();
         feed(&mut s, play::clientbound::SET_TITLES_ANIMATION, |o| {
             o.i32(5).i32(-1).i32(0);
         })
@@ -715,25 +662,16 @@ mod tests {
     #[test]
     fn a_reset_reports_everything_gone() {
         let mut s = Screen::default();
+        let mut m = Maps::default();
         chest(&mut s);
-        patch(&mut s, 9, 0, 0, &[50]).unwrap();
-        assert!(shown_map(&s.changes()).flatten().is_some());
+        patch(&mut s, &mut m, 9, 0, 0, &[50]).unwrap();
+        assert!(shown_map(&s.changes(&m)).flatten().is_some());
         s.reset();
-        let changes = s.changes();
+        let changes = s.changes(&m);
         assert_eq!(shown_map(&changes), Some(None));
         assert_eq!(shown_menu(&changes), Some(None));
         s.reset();
-        assert!(s.changes().is_empty());
+        assert!(s.changes(&m).is_empty());
     }
 
-    #[test]
-    fn carried_pictures_stay_and_at_most_four_others_are_kept() {
-        let mut s = Screen::default();
-        inventory(&mut s, Some(1));
-        for id in 1..=6 {
-            patch(&mut s, id, 0, 0, &[50]).unwrap();
-        }
-        assert_eq!(s.pictures.len(), MAX_MAPS + 1);
-        assert!(s.pictures.iter().any(|p| p.id == 1));
-    }
 }

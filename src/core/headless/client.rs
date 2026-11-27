@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::crowd::Crowd;
+use super::maps::Maps;
 use super::picture::{self, Request, View};
 use super::screen::Screen;
 use super::status::Status;
@@ -121,6 +122,7 @@ struct Link {
     closed: bool,
     shown: Option<Shown>,
     screen: Screen,
+    maps: Maps,
     world: World,
     crowd: Crowd,
     status: Status,
@@ -160,6 +162,7 @@ impl Shared {
             closed: false,
             shown: None,
             screen: Screen::default(),
+            maps: Maps::default(),
             world: World::default(),
             crowd: Crowd::default(),
             status: Status::new(spec.name.clone()),
@@ -297,7 +300,7 @@ impl Shared {
         let height = (width * 9 / 16).max(1);
         let [x, _, z] = link.position;
         let eye = [link.position[0], link.position[1] + picture::EYE_HEIGHT, link.position[2]];
-        let seen = link.crowd.seen(eye, SEEN_RANGE, link.me, link.screen.held(), link.status.left_handed(), |member, name, hideable| link.status.tag(member, name, hideable));
+        let seen = link.crowd.seen(eye, SEEN_RANGE, link.me, link.screen.held(), link.status.left_handed(), &link.maps, |member, name, hideable| link.status.tag(member, name, hideable));
         let hud = link.status.hud(&link.screen);
         let request = Request { world: link.world.snapshot(x, z, PICTURE_RADIUS), seen, hud, position: link.position, rotation: link.rotation, width, height };
         let taken = SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| i64::try_from(d.as_secs()).ok()).unwrap_or(0);
@@ -332,7 +335,7 @@ impl Shared {
     }
 
     fn show_screen(&self, link: &mut Link) {
-        for message in link.screen.changes() {
+        for message in link.screen.changes(&link.maps) {
             self.emit(message);
         }
     }
@@ -518,6 +521,7 @@ fn session(shared: &Shared, spec: &Spec) -> End {
     link.phase = Phase::Login;
     link.held.clear();
     link.screen.reset();
+    link.maps.reset();
     shared.show_screen(&mut link);
     match link.control.take() {
         Some(Control::Quit) => End::Quit,
@@ -637,7 +641,7 @@ fn wanted(phase: Phase, id: i32) -> bool {
     use play::clientbound as p;
     match phase {
         Phase::Configuration => [c::COOKIE_REQUEST, c::DISCONNECT, c::FINISH_CONFIGURATION, c::KEEP_ALIVE, c::PING, c::REGISTRY_DATA, c::RESOURCE_PACK_POP, c::RESOURCE_PACK_PUSH, c::TRANSFER, c::SELECT_KNOWN_PACKS, c::CODE_OF_CONDUCT].contains(&id),
-        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LIGHT_UPDATE, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id) || Crowd::reads(id) || Status::reads(id) || [p::SET_TIME, p::GAME_EVENT].contains(&id),
+        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LIGHT_UPDATE, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id) || Maps::reads(id) || Crowd::reads(id) || Status::reads(id) || [p::SET_TIME, p::GAME_EVENT].contains(&id),
     }
 }
 
@@ -875,6 +879,16 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         link.crowd.read(id, r, me)?;
         return Ok(None);
     }
+    if Maps::reads(id) {
+        let kept: std::collections::HashSet<i32> = link.screen.carried().chain(link.crowd.framed()).collect();
+        match link.maps.read(r, |id| kept.contains(&id)) {
+            Ok(Some(map)) => link.screen.map_changed(map),
+            Ok(None) => {}
+            Err(e) => eprintln!("{}: map packet not read: {e:#}", shared.key),
+        }
+        shared.show_screen(link);
+        return Ok(None);
+    }
     if Screen::reads(id) {
         if let Err(e) = link.screen.read(id, r) {
             eprintln!("{}: screen packet {id} not read: {e:#}", shared.key);
@@ -949,6 +963,7 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         c::START_CONFIGURATION => {
             write(link, s::CONFIGURATION_ACKNOWLEDGED, &mut Out::default())?;
             link.screen.reset();
+            link.maps.reset();
             link.world.clear();
             link.crowd = Crowd::default();
             link.status.reset();
