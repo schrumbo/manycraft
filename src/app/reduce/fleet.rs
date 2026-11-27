@@ -373,6 +373,7 @@ pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>)
         s.reconnects.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
         s.joins.entry(key.clone()).and_modify(|g| *g += 1).or_insert(1);
         s.crash_restarts.remove(key);
+        s.sign_in_rounds.remove(key);
         s.joined.remove(key);
         s.held_joins.remove(key);
         s.phone.forget(key);
@@ -389,7 +390,7 @@ pub(super) fn stop_keys(m: &mut Model, keys: Vec<String>, out: &mut Vec<Effect>)
                 running.push(key.clone());
                 slow.push(key.clone());
             }
-            Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::Failed { .. } | Phase::NoNetwork => {
+            Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::Failed { .. } | Phase::NoNetwork | Phase::SignInWait { .. } => {
                 go(m, key, Phase::Stopped, Why::Stop, out);
             }
             _ => {}

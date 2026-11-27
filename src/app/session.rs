@@ -103,6 +103,8 @@ pub struct Session {
     /// Bumped whenever a game leaves the server, so join commands of an older join stop.
     pub joins: HashMap<String, u64>,
     pub crash_restarts: HashMap<String, u32>,
+    /// Rounds of starts that failed because the sign-in services were down, by key; a launch, a stop or the final failure ends the count.
+    pub sign_in_rounds: HashMap<String, u32>,
     /// When each game first joined in this run.
     pub started: HashMap<String, Instant>,
     /// Games that joined a server and have not left it since.

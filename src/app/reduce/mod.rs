@@ -77,7 +77,7 @@ pub fn reduce(model: &mut Model, env: &Env, event: Event) -> Vec<Effect> {
         Event::JoinDue { key, generation, lines, delay } => games::join_due(model, key, generation, lines, delay, &mut out),
         Event::CaptureDue { key, generation } => headless::capture_due(model, &key, generation, &mut out),
         Event::WaitingStartDue { key } => {
-            if model.games.get(&key).is_some_and(|i| i.phase == Phase::NoNetwork && !i.stopping) {
+            if model.games.get(&key).is_some_and(|i| matches!(i.phase, Phase::NoNetwork | Phase::SignInWait { .. }) && !i.stopping) {
                 fleet::start_keys(model, std::slice::from_ref(&key), &mut out);
             }
         }

@@ -25,7 +25,7 @@ pub enum Report {
     /// The game is installed; the accounts of `batch` wait in line to start.
     Prepared { batch: String },
     Launched { key: String, plain: bool },
-    Failed { key: String, reason: String, login: bool, offline: bool },
+    Failed { key: String, reason: String, login: bool, offline: bool, transient: bool },
     /// Whether the connection came back (`true`) or is gone.
     Reach { online: bool },
     Exited { key: String, code: Option<i32> },

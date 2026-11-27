@@ -51,6 +51,8 @@ pub enum Phase {
     ServerAway { server: String },
     /// Not started because there was no connection; starts by itself when it is back.
     NoNetwork,
+    /// Not started because Microsoft's or Minecraft's sign-in kept failing for a while; starts by itself again, round `attempt` of `of`.
+    SignInWait { attempt: u32, of: u32 },
     /// On `server`, which offers a resource pack the game holds until the user answers.
     Offer { server: String, offer: Offer },
 }
@@ -78,7 +80,7 @@ impl Phase {
 
     /// Whether Stop has something to end: an active instance, or a start that waits for the connection.
     pub fn stoppable(&self) -> bool {
-        self.is_active() || matches!(self, Phase::NoNetwork)
+        self.is_active() || matches!(self, Phase::NoNetwork | Phase::SignInWait { .. })
     }
 
     /// The server the instance is on or was last on, when it is known.
@@ -112,7 +114,7 @@ impl Phase {
 
     /// Whether a game process exists for the instance.
     pub fn is_running(&self) -> bool {
-        !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::LoginNeeded | Phase::Failed { .. } | Phase::NoNetwork)
+        !matches!(self, Phase::Stopped | Phase::Crashed { .. } | Phase::Restarting { .. } | Phase::LoginNeeded | Phase::Failed { .. } | Phase::NoNetwork | Phase::SignInWait { .. })
     }
 
     /// Whether the game counts in "n of m running": it is past its queue and connected, a player on the death screen
@@ -811,7 +813,7 @@ pub fn primary(phase: &Phase, stopping: Stopping) -> Option<Primary> {
         Phase::Stopped | Phase::Crashed { .. } | Phase::Failed { .. } => Some(Primary::Start),
         Phase::LoginNeeded => Some(Primary::SignIn),
         Phase::Menu | Phase::Connecting { .. } | Phase::Queue { .. } | Phase::Playing { .. } | Phase::NetworkLost { .. } | Phase::ServerAway { .. } => Some(Primary::Play),
-        Phase::NoNetwork => Some(Primary::Retry),
+        Phase::NoNetwork | Phase::SignInWait { .. } => Some(Primary::Retry),
         Phase::Starting { .. } | Phase::Plain | Phase::Banned { .. } => None,
         Phase::Restarting { .. } => Some(Primary::Start),
         Phase::Offer { offer, .. } if offer.is_conduct() => Some(Primary::AcceptRules),
@@ -890,6 +892,7 @@ pub fn status(i: &Game, preparing: Option<u8>) -> String {
         Phase::NetworkLost { .. } => tr("Keine Verbindung · verbindet sich wieder, sobald das Internet zurück ist"),
         Phase::ServerAway { .. } => tr("Server weg · verbindet sich wieder, sobald er antwortet"),
         Phase::NoNetwork => tr("Keine Verbindung · startet, sobald das Internet zurück ist"),
+        Phase::SignInWait { attempt, of } => trf("Microsoft-Anmeldung gestört · neuer Versuch gleich (%lld von %lld)", &[attempt, of]),
         Phase::Offer { offer, .. } if offer.is_conduct() => tr("Server fragt nach seinen Regeln"),
         Phase::Offer { offer, .. } if offer.required => tr("Server verlangt ein Ressourcenpaket"),
         Phase::Offer { .. } => tr("Server bietet ein Ressourcenpaket an"),

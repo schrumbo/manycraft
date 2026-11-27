@@ -477,6 +477,7 @@ fn word(i: &Game, preparing: Option<u8>, banned: bool) -> String {
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
         Phase::NetworkLost { .. } | Phase::NoNetwork => tr("Keine Verbindung"),
+        Phase::SignInWait { .. } => tr("Anmeldung gestört"),
         Phase::ServerAway { .. } => tr("Wartet auf Server"),
         Phase::Offer { .. } => tr("Ressourcenpaket"),
     }
@@ -518,6 +519,7 @@ fn moments(key: &str, m: &Model) -> Vec<Moment> {
                 Kind::Kicked => tr("Gekickt"),
                 Kind::Banned => tr("Gesperrt"),
                 Kind::Crashed => tr("Abgestürzt"),
+                Kind::StartFailed => tr("Start fehlgeschlagen"),
             };
             let reason = if e.reason.trim().is_empty() { e.server.clone().unwrap_or_default() } else { e.reason.trim().to_owned() };
             Moment { when: super::instance_files::when(i64::try_from(e.at).unwrap_or(i64::MAX)), what, reason }

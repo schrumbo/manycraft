@@ -48,6 +48,7 @@ pub fn word(g: &Game, m: &Model) -> String {
         Phase::LoginNeeded => tr("Anmeldung nötig"),
         Phase::Failed { .. } => tr("Fehlgeschlagen"),
         Phase::NetworkLost { .. } | Phase::NoNetwork => tr("Keine Verbindung"),
+        Phase::SignInWait { .. } => tr("Anmeldung gestört"),
         Phase::ServerAway { .. } => tr("Wartet auf Server"),
         Phase::Offer { offer, .. } if offer.is_conduct() => tr("Serverregeln"),
         Phase::Offer { .. } => tr("Ressourcenpaket"),
@@ -149,6 +150,7 @@ pub fn moments(key: &str, m: &Model) -> Vec<Moment> {
                 Kind::Kicked => tr("Gekickt"),
                 Kind::Banned => tr("Gesperrt"),
                 Kind::Crashed => tr("Abgestürzt"),
+                Kind::StartFailed => tr("Start fehlgeschlagen"),
             };
             let reason = if e.reason.trim().is_empty() { e.server.clone().unwrap_or_default() } else { e.reason.trim().to_owned() };
             Moment { when: when(e.at), what, reason }

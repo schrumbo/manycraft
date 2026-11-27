@@ -599,7 +599,7 @@ fn mark(phase: &Phase) -> Option<Icon> {
         Phase::Crashed { .. } => Some(Icon::Crash),
         Phase::Disconnected { .. } | Phase::NetworkLost { .. } | Phase::NoNetwork => Some(Icon::Wifi),
         Phase::Dead { .. } | Phase::Failed { .. } => Some(Icon::Alert),
-        Phase::ServerAway { .. } => Some(Icon::Clock),
+        Phase::ServerAway { .. } | Phase::SignInWait { .. } => Some(Icon::Clock),
         _ => None,
     }
 }
@@ -630,7 +630,7 @@ fn gray(handle: &ImageHandle) -> Option<ImageHandle> {
 }
 
 fn placeholder(t: &Theme, phase: &Phase, face: Option<ImageHandle>) -> Option<Element> {
-    let quiet = matches!(phase, Phase::NetworkLost { .. } | Phase::NoNetwork | Phase::ServerAway { .. });
+    let quiet = matches!(phase, Phase::NetworkLost { .. } | Phase::NoNetwork | Phase::ServerAway { .. } | Phase::SignInWait { .. });
     match (mark(phase), face) {
         (Some(g), _) => Some(icon(t, g, iconsize::L, if quiet { t.text3 } else { t.text2 })),
         (None, Some(face)) if *phase != Phase::Stopped => Some(image(face).width(Size::px(space::XXL)).height(Size::px(space::XXL)).opacity(0.5).into_element()),
