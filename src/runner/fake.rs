@@ -209,8 +209,16 @@ impl<P: Pixels> Sim<P> {
                 self.at(after + Duration::from_millis(1600), cancel, state(key, StateKind::Playing, None));
                 self.at(after + Duration::from_secs(8), cancel, state(key, StateKind::Dead, Some("Zombie")));
             }
-            _ => self.at(after + Duration::from_millis(1600), cancel, state(key, StateKind::Playing, None)),
+            n => {
+                self.at(after + Duration::from_millis(1600), cancel, state(key, StateKind::Playing, None));
+                if n == 2 {
+                    let near = Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Nearby { players: vec!["Notch".to_owned()] } });
+                    self.at(after + Duration::from_secs(4), cancel, near);
+                }
+            }
         }
+        let vitals = Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::Vitals { health: 8 + (hash(key) % 13) as u16, food: 12 + (hash(key) % 9) as u8 } });
+        self.at(after + Duration::from_millis(1700), cancel, vitals);
     }
 
     fn command(&mut self, cmd: Cmd) {

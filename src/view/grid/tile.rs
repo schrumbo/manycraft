@@ -172,7 +172,7 @@ pub(super) fn context(store: Store, key: &str) -> Vec<Item> {
     }
     let offered = ui.selection.peek().iter().any(|k| m.games.get(k).is_some_and(|g| g.phase.needs_pack_answer()));
     let ruled = ui.selection.peek().iter().any(|k| m.games.get(k).is_some_and(|g| g.phase.needs_rules_answer()));
-    for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected, Command::ScreenshotSelected, Command::AcceptPacks, Command::DeclinePacks, Command::AcceptRules, Command::DeclineRules] {
+    for c in [Command::StartSelected, Command::StopSelected, Command::RestartSelected, Command::ReconnectSelected, Command::ScreenshotSelected, Command::UseItem, Command::AcceptPacks, Command::DeclinePacks, Command::AcceptRules, Command::DeclineRules] {
         let doubled = match c {
             Command::StartSelected => matches!(primary, Some(Primary::Start | Primary::TakeOver)),
             Command::ReconnectSelected => matches!(primary, Some(Primary::Reconnect)),
@@ -654,11 +654,6 @@ fn bare(t: &Theme, game: &Game, m: &Model, account: Option<&Account>, face: Opti
             _ => words::caption(game, m),
         };
         column = column.child(line(t, place, font::CAPTION, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
-        if !game.nearby.is_empty() {
-            column = column.child(line(t, trf("Spieler in der Nähe: %@", &[&game.nearby.join(", ")]), font::CAPTION, t.attention_text).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
-        } else if let Some(v) = game.vitals.filter(|_| game.phase.on_server() && !game.stopping) {
-            column = column.child(line(t, trf("Leben %lld · Hunger %lld", &[&v.health, &v.food]), font::CAPTION2, t.text3).max_lines(1).width(Size::fill()).text_align(TextAlign::Center));
-        }
         let rules = match &game.phase {
             Phase::Offer { offer, .. } if offer.is_conduct() => offer.text.clone(),
             _ => None,

@@ -62,6 +62,7 @@ pub fn short(g: &Game, m: &Model) -> Option<String> {
     }
     Some(match &g.phase {
         _ if stopped_ban(g, m).is_some() => tr("Gesperrt"),
+        Phase::Playing { .. } if g.connection && !g.nearby.is_empty() => tr("Spieler"),
         Phase::LoginNeeded => tr("Abgemeldet"),
         Phase::Banned { .. } => tr("Gesperrt"),
         Phase::Disconnected { .. } => tr("Getrennt"),
@@ -91,7 +92,14 @@ pub fn line(g: &Game, m: &Model) -> String {
 /// The second line under a tile's picture: the server alone while all is well, otherwise as [`line`].
 pub fn caption(g: &Game, m: &Model) -> String {
     match &g.phase {
-        Phase::Playing { server, .. } if !server.is_empty() && !g.stopping && !g.hint.link_lost && reason(g, m).is_none() => server.strip_suffix(":25565").unwrap_or(server).to_owned(),
+        Phase::Playing { .. } if g.connection && !g.nearby.is_empty() && !g.stopping && !g.hint.link_lost => trf("Spieler in der Nähe: %@", &[&g.nearby.join(", ")]),
+        Phase::Playing { server, .. } if !server.is_empty() && !g.stopping && !g.hint.link_lost && reason(g, m).is_none() => {
+            let server = server.strip_suffix(":25565").unwrap_or(server);
+            match g.vitals.filter(|_| g.connection) {
+                Some(v) => trf("%@ · Leben %lld · Hunger %lld", &[&server, &v.health, &v.food]),
+                None => server.to_owned(),
+            }
+        }
         _ => line(g, m),
     }
 }

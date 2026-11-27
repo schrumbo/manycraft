@@ -2401,7 +2401,7 @@
   "Gegenstand benutzen": "Use item",
   "Hotbar-Slot %lld": "Hotbar slot %lld",
   "Spieler in der Nähe: %@": "Player nearby: %@",
-  "Leben %lld · Hunger %lld": "Health %lld · Hunger %lld",
+  "%@ · Leben %lld · Hunger %lld": "%@ · Health %lld · Hunger %lld",
   "Nach dem Tod automatisch wiederbeleben": "Respawn automatically after death",
   "Ein gestorbener Account steigt nach kurzer Pause wieder ein. Jeder Tod steht im Verlauf.": "A dead account rejoins after a short pause. Every death is in the history.",
   "Ein gestorbener Account wartet, bis du ihn in seiner Kachel wiederbelebst.": "A dead account waits until you respawn it in its tile."
