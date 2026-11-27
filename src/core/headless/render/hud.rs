@@ -6,6 +6,7 @@
 
 use anyhow::Result;
 use image::RgbaImage;
+use serde::{Deserialize, Serialize};
 
 use crate::core::chat_text::Run;
 
@@ -123,9 +124,39 @@ pub struct Chat {
     pub age: i32,
 }
 
+/// Which parts of a picture through the player's eyes are drawn; everything is on, as in the game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Parts {
+    pub chat: bool,
+    /// The hotbar with the off-hand slot.
+    pub hotbar: bool,
+    /// The hand and the item in it.
+    pub hand: bool,
+    pub crosshair: bool,
+    /// Health, food, armor and air.
+    pub stats: bool,
+    /// The experience bar and level.
+    pub experience: bool,
+    pub bosses: bool,
+    pub sidebar: bool,
+    /// Title, subtitle and the action bar.
+    pub titles: bool,
+    /// The darkening at the edges.
+    pub vignette: bool,
+}
+
+impl Default for Parts {
+    fn default() -> Self {
+        Self { chat: true, hotbar: true, hand: true, crosshair: true, stats: true, experience: true, bosses: true, sidebar: true, titles: true, vignette: true }
+    }
+}
+
 /// What the game shows over the world.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hud {
+    /// What of it is drawn.
+    pub parts: Parts,
     /// 0 survival, 1 creative, 2 adventure, 3 spectator; creative and spectator show no health, food or experience.
     pub game_mode: u8,
     pub hardcore: bool,
@@ -166,6 +197,7 @@ pub struct Hud {
 impl Default for Hud {
     fn default() -> Self {
         Self {
+            parts: Parts::default(),
             game_mode: 0,
             hardcore: false,
             health: 20.0,
@@ -207,24 +239,36 @@ pub fn draw(image: &mut RgbaImage, hud: &Hud) -> Result<()> {
 pub fn draw_with(image: &mut RgbaImage, hud: &Hud, art: &Art) {
     let mut canvas = canvas::Canvas::new(image);
     let c = &mut canvas;
-    let spectator = hud.game_mode == 3;
+    let (spectator, parts) = (hud.game_mode == 3, hud.parts);
     if !spectator {
-        bars::crosshair(c, art);
-        bars::hotbar(c, art, hud);
+        if parts.crosshair {
+            bars::crosshair(c, art);
+        }
+        if parts.hotbar {
+            bars::hotbar(c, art, hud);
+        }
         if hud.game_mode != 1 {
-            bars::stats(c, art, hud);
-            bars::experience(c, art, hud);
+            if parts.stats {
+                bars::stats(c, art, hud);
+            }
+            if parts.experience {
+                bars::experience(c, art, hud);
+            }
         }
     }
-    if !hud.bosses.is_empty() {
+    if parts.bosses && !hud.bosses.is_empty() {
         text::bosses(c, art, &hud.bosses);
     }
-    if let Some(side) = &hud.sidebar {
+    if let (true, Some(side)) = (parts.sidebar, &hud.sidebar) {
         text::sidebar(c, art, side);
     }
-    text::title(c, art, hud);
-    text::action_bar(c, art, hud);
-    text::chat(c, art, &hud.chat);
+    if parts.titles {
+        text::title(c, art, hud);
+        text::action_bar(c, art, hud);
+    }
+    if parts.chat {
+        text::chat(c, art, &hud.chat);
+    }
 }
 
 #[cfg(test)]
@@ -291,6 +335,45 @@ mod tests {
         let hotbar = image.get_pixel(640, 720 - 10).0;
         assert_ne!(hotbar, [90, 140, 200, 255], "the hotbar is drawn");
         assert!(took.as_millis() < if cfg!(debug_assertions) { 500 } else { 50 }, "{took:?}");
+    }
+
+    #[test]
+    fn a_part_that_is_off_is_not_drawn() {
+        let Some(art) = jar().and_then(|j| Art::open(&j).ok()) else { return };
+        let blank = RgbaImage::from_pixel(1280, 720, image::Rgba([90, 140, 200, 255]));
+        let drawn = |parts: Parts| {
+            let mut image = blank.clone();
+            draw_with(&mut image, &Hud { parts, ..full() }, &art);
+            image
+        };
+        let off = Parts { chat: false, hotbar: false, hand: false, crosshair: false, stats: false, experience: false, bosses: false, sidebar: false, titles: false, vignette: false };
+        assert!(drawn(off) == blank, "nothing is drawn with every part off");
+        let only: [(&str, fn(&mut Parts)); 7] = [
+            ("chat", |p| p.chat = true),
+            ("hotbar", |p| p.hotbar = true),
+            ("crosshair", |p| p.crosshair = true),
+            ("stats", |p| p.stats = true),
+            ("experience", |p| p.experience = true),
+            ("bosses", |p| p.bosses = true),
+            ("sidebar", |p| p.sidebar = true),
+        ];
+        for (name, on) in only {
+            let mut parts = off;
+            on(&mut parts);
+            assert!(drawn(parts) != blank, "{name} draws when it is on");
+        }
+        let mut parts = off;
+        parts.titles = true;
+        assert!(drawn(parts) != blank, "titles draw when they are on");
+        let all = drawn(Parts::default());
+        let without_chat = drawn(Parts { chat: false, ..Parts::default() });
+        assert!(all != without_chat, "chat is part of the full picture");
+        if let Some(out) = std::env::var_os("HUD_OUT") {
+            let out = std::path::PathBuf::from(out);
+            std::fs::create_dir_all(&out).unwrap();
+            without_chat.save(out.join("hud-chat-off.png")).unwrap();
+        }
+        assert!(without_chat.pixels().zip(all.pixels()).all(|(a, b)| a == b || b.0 != [90, 140, 200, 255]), "only chat pixels went");
     }
 
     #[test]

@@ -128,7 +128,7 @@ fn textured(request: &Request) -> anyhow::Result<Vec<u8>> {
     let area = Area::new(&request.world, ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4), u32::from(DISTANCE) + 1);
     let (w, h) = (request.width.max(1), request.height.max(1));
     let camera = Camera { pos: [x, y + EYE_HEIGHT, z], yaw: request.rotation[0], pitch: request.rotation[1], fov: FOV_Y, distance: DISTANCE };
-    Ok(render::render(&area, &request.world.biomes, &request.seen, &camera, &request.world.sky, w, h, &assets).into_raw())
+    Ok(render::render(&area, &request.world.biomes, &request.seen, &camera, &request.world.sky, w, h, &assets, request.hud.parts).into_raw())
 }
 
 struct Area {

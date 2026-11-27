@@ -6,6 +6,7 @@ use std::sync::{Mutex, OnceLock, RwLock};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use super::headless::render::hud::Parts;
 use super::instance::DEFAULT_MEMORY_MB;
 use super::options::{Gpu, MEMORY_FLOOR_MB, MEMORY_MIN_FLOOR_MB, WindowSize};
 use super::{paths, phone, store};
@@ -153,6 +154,9 @@ pub struct Settings {
     pub auto_update: bool,
     /// Whether pre-releases count as updates.
     pub prereleases: bool,
+    /// Which parts the screenshots of accounts without a game draw over the world.
+    #[serde(skip_serializing_if = "is_default")]
+    pub headless_hud: Parts,
     /// Whether each game shows a small badge with the account's name and colour in its corner.
     pub game_badge: bool,
     /// Whether the computer is kept from sleeping on its own while a game runs.
@@ -194,7 +198,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, discord_status: true, tray_explained: false, while_playing: WhilePlaying::Minimize, reopen_after: true, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, system_frame: false, kept: serde_json::Map::new() }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), headless_hud: Parts::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, discord_status: true, tray_explained: false, while_playing: WhilePlaying::Minimize, reopen_after: true, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, system_frame: false, kept: serde_json::Map::new() }
     }
 }
 
@@ -315,6 +319,16 @@ mod tests {
     fn missing_file_gives_the_defaults() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(load_from(dir.path()).unwrap(), Settings::default());
+    }
+
+    #[test]
+    fn old_files_draw_every_part_of_a_headless_shot() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE), r#"{"reconnect":{"max_attempts":2}}"#).unwrap();
+        assert_eq!(load_from(dir.path()).unwrap().headless_hud, Parts::default());
+        std::fs::write(dir.path().join(FILE), r#"{"headless_hud":{"chat":false}}"#).unwrap();
+        let hud = load_from(dir.path()).unwrap().headless_hud;
+        assert!(!hud.chat && hud.hotbar && hud.hand && hud.vignette && hud.titles);
     }
 
     #[test]

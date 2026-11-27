@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::crowd::{self, Meta};
 use super::item;
-use super::render::hud::{self, Boss, Chat, Hud, Number, Score, Sidebar, Team, Text};
+use super::render::hud::{self, Boss, Chat, Hud, Number, Parts, Score, Sidebar, Team, Text};
 use super::screen::Screen;
 use super::text;
 use super::v777::{ATTRIBUTES, ITEMS, MAX_DAMAGE, MOB_EFFECTS, entity_data as d, play};
@@ -241,6 +241,7 @@ impl Status {
         let active = |name: &str| self.effects.iter().any(|(e, until)| usize::try_from(*e).ok().and_then(|e| MOB_EFFECTS.get(e)) == Some(&name) && until.is_none_or(|u| u > now));
         let (hands, selected) = screen.hands();
         Hud {
+            parts: Parts::default(),
             game_mode: self.game_mode,
             hardcore: self.hardcore,
             health: self.health,

@@ -31,6 +31,7 @@ use serde_json::Value;
 pub use self::assets::{Assets, shared};
 pub use self::environment::{Cardinal, Environment, Skybox};
 pub use self::entity::{Data, Display, DisplayKind, Entities, Entity, Hand, Item, MapPicture, Nobody, Pose, Skin, Text, slot};
+use self::hud::Parts;
 use self::light::Lightmap;
 use self::raster::{Fog, Later, Target};
 use self::scene::{Scene, View};
@@ -154,7 +155,7 @@ const NOON: i64 = 6000;
 
 /// Draws what `camera` sees of `world` as an RGBA picture of `width` × `height`, rows top down.
 /// Sides are clamped to 1..=4096, the render distance to 1..=4; a camera off the map or not a number is moved onto it.
-pub fn render(world: &impl Blocks, biomes: &[Biome], entities: &impl Entities, camera: &Camera, sky: &Sky, width: u32, height: u32, assets: &Assets) -> image::RgbaImage {
+pub fn render(world: &impl Blocks, biomes: &[Biome], entities: &impl Entities, camera: &Camera, sky: &Sky, width: u32, height: u32, assets: &Assets, parts: Parts) -> image::RgbaImage {
     let (w, h) = (width.clamp(1, MAX_SIDE) as usize, height.clamp(1, MAX_SIDE) as usize);
     let camera = &sane_camera(camera, world);
     let env = sky.environment;
@@ -181,8 +182,10 @@ pub fn render(world: &impl Blocks, biomes: &[Biome], entities: &impl Entities, c
     if let Some(font) = &assets.font {
         label::draw(&mut figure::Painter { target: &mut target, view: &view }, font, &mut labels);
     }
-    actor::hand(entities, &scene, assets, &lightmap, &view, &mut target);
-    if let Some(texture) = &assets.vignette {
+    if parts.hand {
+        actor::hand(entities, &scene, assets, &lightmap, &view, &mut target);
+    }
+    if let (true, Some(texture)) = (parts.vignette, &assets.vignette) {
         let (sky_light, block_light) = world.light(eye[0], eye[1], eye[2]).unwrap_or((15, 0));
         target.vignette(texture, light::vignette(sky_light, block_light, lightmap.sky_level()));
     }
@@ -261,7 +264,7 @@ mod tests {
         let assets = Assets::open(&jar).unwrap();
         let camera = Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 0.0, fov: 70.0, distance: 2 };
         let start = std::time::Instant::now();
-        let image = render(&Flat, &[Biome::default()], &Nobody, &camera, &Sky::default(), 320, 180, &assets);
+        let image = render(&Flat, &[Biome::default()], &Nobody, &camera, &Sky::default(), 320, 180, &assets, Parts::default());
         let took = start.elapsed();
         image.save(std::env::temp_dir().join("manycraft-render-flat.png")).ok();
         let top = image.get_pixel(160, 2).0;
@@ -279,7 +282,7 @@ mod tests {
         let at = |env: &str, biome: Biome| {
             let environment = Environment::from_json(&serde_json::from_str(env).unwrap());
             let sky = Sky { environment, ..Sky::default() };
-            render(&Flat, &[biome], &Nobody, &camera, &sky, 160, 90, &assets).get_pixel(80, 3).0
+            render(&Flat, &[biome], &Nobody, &camera, &sky, 160, 90, &assets, Parts::default()).get_pixel(80, 3).0
         };
         let nether = at(r##"{"skybox": "none", "attributes": {"minecraft:visual/sky_light_factor": 0.0}}"##, Biome { fog: Some(0x330808), sky: None, ..Biome::default() });
         assert!(nether[0].abs_diff(0x33) <= 2 && nether[1].abs_diff(8) <= 2 && nether[2].abs_diff(8) <= 2, "{nether:?}");
@@ -295,7 +298,7 @@ mod tests {
         let assets = Assets::open(&jar).unwrap();
         let camera = Camera { pos: [f64::NAN, 1e12, f64::INFINITY], yaw: f32::NAN, pitch: 400.0, fov: f32::NAN, distance: 255 };
         let sky = Sky { time: Some(i64::MIN), rain: f32::NAN, thunder: f32::INFINITY, ..Sky::default() };
-        let image = render(&Flat, &[], &Nobody, &camera, &sky, 0, 100_000, &assets);
+        let image = render(&Flat, &[], &Nobody, &camera, &sky, 0, 100_000, &assets, Parts::default());
         assert_eq!(image.dimensions(), (1, MAX_SIDE));
         assert!(image.pixels().any(|p| p.0[..3] != [0, 0, 0]), "a camera put back on the map still sees something");
     }
@@ -374,8 +377,8 @@ mod tests {
         }
         let quarter = MapPicture { colors: std::sync::Arc::new(colors) };
         let camera = Camera { pos: [0.5, 64.5, 0.5], yaw: 0.0, pitch: 0.0, fov: 70.0, distance: 2 };
-        let shown = render(&Flat, &[Biome::default()], &Mapped(vec![frame.clone()], quarter), &camera, &Sky::default(), 64, 64, &assets);
-        let unknown = render(&Flat, &[Biome::default()], &Crowd(vec![frame]), &camera, &Sky::default(), 64, 64, &assets);
+        let shown = render(&Flat, &[Biome::default()], &Mapped(vec![frame.clone()], quarter), &camera, &Sky::default(), 64, 64, &assets, Parts::default());
+        let unknown = render(&Flat, &[Biome::default()], &Crowd(vec![frame]), &camera, &Sky::default(), 64, 64, &assets, Parts::default());
         let (north_west, south_east) = (shown.get_pixel(28, 28).0, shown.get_pixel(36, 36).0);
         assert!(north_west[0] > north_west[1] * 2 && north_west[0] > north_west[2] * 2, "north-west quarter is red: {north_west:?}");
         assert!(south_east[2] > south_east[0] * 2, "the rest is water blue: {south_east:?}");
@@ -456,28 +459,32 @@ mod tests {
         }).collect();
         assert_eq!(row.len(), kinds.len());
         let camera = Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 10.0, fov: 70.0, distance: 2 };
-        let bare = render(&Flat, &[Biome::default()], &Nobody, &camera, &Sky::default(), 640, 360, &assets);
-        let image = render(&Flat, &[Biome::default()], &Crowd(row.clone()), &camera, &Sky::default(), 640, 360, &assets);
+        let bare = render(&Flat, &[Biome::default()], &Nobody, &camera, &Sky::default(), 640, 360, &assets, Parts::default());
+        let image = render(&Flat, &[Biome::default()], &Crowd(row.clone()), &camera, &Sky::default(), 640, 360, &assets, Parts::default());
         let out = crate::core::paths::data_dir().join("..").join("render-crowd.png");
         image.save(std::env::temp_dir().join("manycraft-render-crowd.png")).ok();
         let _ = out;
         let props: Vec<Entity> = row.iter().skip(16).enumerate().map(|(i, e)| { let mut e = e.clone(); e.pos = [i as f64 * 1.2 - 4.0, 63.0 + if matches!(e.data, Data::Frame { .. } | Data::Display { .. }) { 1.0 } else { 0.0 }, 4.0]; e }).collect();
-        render(&Flat, &[Biome::default()], &Crowd(props), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join("manycraft-render-props.png")).ok();
+        render(&Flat, &[Biome::default()], &Crowd(props), &camera, &Sky::default(), 640, 360, &assets, Parts::default()).save(std::env::temp_dir().join("manycraft-render-props.png")).ok();
         let labels: Vec<Entity> = ["text_display -2.5 64.2 4 180 text=Welcome_to_the|§_spawn_§ flags=1 billboard=0", "text_display 0.5 65.4 4.5 180 text=Left_aligned|text_on_a|red_background flags=8 background=A0FF0000 billboard=3", "text_display 3.5 64.2 4 180 text=Right|aligned_lines flags=18 color=FFD700", "player -1.5 63 5 180 name=Steve main=diamond_sword", "villager 1.5 63 5 180 name=Farmer_Bob color=55FF55", "armor_stand 3 63 3.5 180 hidden name=Hidden_hologram head=golden_helmet", "player 4.5 63 6 180 sneak name=Sneaky"].iter().filter_map(|l| crowd_entity(l)).collect();
         assert_eq!(labels.len(), 7);
-        render(&Flat, &[Biome::default()], &Crowd(labels), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join("manycraft-render-labels.png")).ok();
+        render(&Flat, &[Biome::default()], &Crowd(labels), &camera, &Sky::default(), 640, 360, &assets, Parts::default()).save(std::env::temp_dir().join("manycraft-render-labels.png")).ok();
         let solo = vec![crowd_entity("player 0.5 63 3.5 180 main=diamond_sword").unwrap()];
-        render(&Flat, &[Biome::default()], &Crowd(solo.clone()), &Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-front.png")).ok();
-        render(&Flat, &[Biome::default()], &Crowd(solo), &Camera { pos: [3.5, 64.62, 3.5], yaw: 90.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets).save(std::env::temp_dir().join("manycraft-render-solo-side.png")).ok();
+        render(&Flat, &[Biome::default()], &Crowd(solo.clone()), &Camera { pos: [0.5, 64.62, 0.5], yaw: 0.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets, Parts::default()).save(std::env::temp_dir().join("manycraft-render-solo-front.png")).ok();
+        render(&Flat, &[Biome::default()], &Crowd(solo), &Camera { pos: [3.5, 64.62, 3.5], yaw: 90.0, pitch: 10.0, fov: 70.0, distance: 2 }, &Sky::default(), 320, 320, &assets, Parts::default()).save(std::env::temp_dir().join("manycraft-render-solo-side.png")).ok();
         for (name, main) in [("sword", Some(item("diamond_sword"))), ("empty", None), ("block", Some(item("oak_log")))] {
             let hand = Hand { main, left_handed: false, skin: Skin { parts: 0x7F, ..Skin::default() } };
-            render(&Flat, &[Biome::default()], &Holding(row.clone(), hand), &camera, &Sky::default(), 640, 360, &assets).save(std::env::temp_dir().join(format!("manycraft-render-hand-{name}.png"))).ok();
+            render(&Flat, &[Biome::default()], &Holding(row.clone(), hand), &camera, &Sky::default(), 640, 360, &assets, Parts::default()).save(std::env::temp_dir().join(format!("manycraft-render-hand-{name}.png"))).ok();
         }
+        let hand = || Hand { main: Some(item("diamond_sword")), left_handed: false, skin: Skin { parts: 0x7F, ..Skin::default() } };
+        let held = |parts: Parts| render(&Flat, &[Biome::default()], &Holding(Vec::new(), hand()), &camera, &Sky::default(), 640, 360, &assets, parts);
+        assert!(held(Parts::default()) != bare, "the hand is drawn");
+        assert!(held(Parts { hand: false, ..Parts::default() }) == bare, "a hand that is off is not drawn");
         let changed = bare.pixels().zip(image.pixels()).filter(|(a, b)| a != b).count();
         assert!(changed > 640 * 360 / 20, "the mobs cover part of the picture: {changed}");
         let many: Vec<Entity> = (0..200).map(|i| { let mut e = row[i % row.len()].clone(); e.pos = [(i % 20) as f64 - 10.0, 63.0, 6.0 + (i / 20) as f64 * 2.0]; e }).collect();
         let start = std::time::Instant::now();
-        render(&Flat, &[Biome::default()], &Crowd(many), &camera, &Sky::default(), 1280, 720, &assets);
+        render(&Flat, &[Biome::default()], &Crowd(many), &camera, &Sky::default(), 1280, 720, &assets, Parts::default());
         let took = start.elapsed();
         eprintln!("200 entities at 1280x720: {took:?}");
         assert!(took.as_secs_f32() < if cfg!(debug_assertions) { 30.0 } else { 1.0 }, "{took:?}");
@@ -521,7 +528,7 @@ mod tests {
                 Hand { main: (held != "-").then(|| item(held)), left_handed: false, skin }
             });
             let map = std::env::var("RENDER_MAP").ok().map(|p| MapPicture { colors: std::sync::Arc::new(std::fs::read(p).unwrap().try_into().expect("128 × 128 colour bytes")) });
-            let image = render(&world, &biomes, &Shot { entities: crowd, hand, map }, &camera, &sky, w, h, &assets);
+            let image = render(&world, &biomes, &Shot { entities: crowd, hand, map }, &camera, &sky, w, h, &assets, Parts::default());
             eprintln!("{} eye {y:.2} {:?}", f[0], start.elapsed());
             image.save(out.join(format!("ours-{}.png", f[0]))).unwrap();
         }
