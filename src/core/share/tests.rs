@@ -315,10 +315,11 @@ fn the_old_settings_keep_sync_on_with_the_kinds_that_were_on() {
     w.put(w.shared("config/mod.toml"), "shared");
     w.put(w.shared("options.txt"), "guiScale:3\n");
     w.put(w.shared("servers.dat"), "servers");
-    w.put(w.shared("setups.json"), "[]");
+    w.put(w.shared("setups.json"), &format!("[{{\"base\": \"{}\"}}]", cfg.id));
     w.put(w.shared("history/index.json"), "{}");
     assert!(migrate_in(&w.mother, &w.root).unwrap());
     let state = state::read(&w.mother);
+    assert_eq!(state.mother.as_deref(), Some(cfg.id.as_str()), "the old base stays the mother");
     assert!(state.on && state.options && state.config && !state.saves && !state.screenshots);
     assert_eq!(read(w.shared("config/mod.toml")), "shared", "the shared state stays");
     assert_eq!(read(both.dir.join("servers.dat")), "servers", "the server list becomes a real file");
@@ -342,4 +343,78 @@ fn without_old_sync_settings_the_sync_stays_off() {
     assert!(!migrate_in(&w.mother, &w.root).unwrap());
     assert!(!state::read(&w.mother).on);
     assert!(!instance::load_all_in(&w.root).unwrap().iter().any(|i| i.id == a.id && i.sync_out));
+}
+
+#[test]
+fn deleting_a_sharing_instance_leaves_the_shared_worlds_and_screenshots() {
+    let w = world();
+    let (a, b) = (w.instance("A"), w.instance("B"));
+    w.put(w.game(&a, "saves").join("World One").join("level.dat"), "w1");
+    w.put(w.game(&a, "screenshots").join("1.png"), "s1");
+    w.on(&a);
+    w.start(&b);
+    assert!(linked_to(&b.dir.join("games").join(ACCOUNT).join("saves"), &w.shared("saves")));
+    let made = instance::load_all_in(&w.root).unwrap().into_iter().find(|i| i.id == b.id).unwrap();
+    instance::delete_in(&w.root, &made).unwrap();
+    assert!(!b.dir.exists());
+    assert_eq!(read(w.shared("saves").join("World One").join("level.dat")), "w1");
+    assert_eq!(read(w.shared("screenshots").join("1.png")), "s1");
+    assert_eq!(read(a.dir.join("games").join(ACCOUNT).join("saves").join("World One").join("level.dat")), "w1");
+}
+
+#[test]
+fn accounts_sharing_one_folder_list_each_world_and_screenshot_once() {
+    let w = world();
+    let a = w.instance("A");
+    w.put(w.game(&a, "saves").join("World One").join("level.dat"), "w1");
+    w.put(w.game(&a, "screenshots").join("1.png"), "s1");
+    w.on(&a);
+    let second = a.dir.join("games").join("0000000000000000000000000000000b");
+    fs::create_dir_all(&second).unwrap();
+    settle_game_in(&w.mother, &a.dir, &second).unwrap();
+    assert!(linked_to(&second.join("saves"), &w.shared("saves")));
+    let worlds = crate::core::worlds::list(&a.dir);
+    assert_eq!(worlds.iter().filter(|x| x.folder == "World One").count(), 1);
+    assert_eq!(crate::core::shots::list(&a.dir).len(), 1);
+    assert_eq!(crate::core::worlds::distinct_dirs(&a.dir, "saves").len(), 1);
+}
+
+#[test]
+fn an_opted_out_mother_joins_again_and_keeps_its_worlds() {
+    let w = world();
+    let (a, b) = (w.instance("A"), w.instance("B"));
+    w.put(w.game(&a, "saves").join("World One").join("level.dat"), "w1");
+    let mut made = instance::load_all_in(&w.root).unwrap().into_iter().find(|i| i.id == a.id).unwrap();
+    made.sync_out = true;
+    save_in(&w.root, &made).unwrap();
+    w.on(&a);
+    assert!(flags_in(&w.mother, &a.dir).saves);
+    w.start(&a);
+    w.start(&b);
+    assert_eq!(read(b.dir.join("games").join(ACCOUNT).join("saves").join("World One").join("level.dat")), "w1");
+}
+
+#[test]
+fn the_sync_folder_stays_while_an_instance_sits_in_the_trash() {
+    let w = world();
+    let a = w.instance("A");
+    w.put(w.game(&a, "saves").join("World One").join("level.dat"), "w1");
+    w.on(&a);
+    w.start(&a);
+    fs::create_dir_all(w.root.join(".trash").join("x-1")).unwrap();
+    turn_off_in(&w.mother, &w.root, &[]).unwrap();
+    assert_eq!(read(w.shared("saves").join("World One").join("level.dat")), "w1");
+}
+
+#[test]
+fn a_world_in_use_does_not_block_giving_instances_their_own_copy() {
+    let w = world();
+    let (a, b) = (w.instance("A"), w.instance("B"));
+    w.put(w.game(&a, "saves").join("World One").join("level.dat"), "w1");
+    w.on(&a);
+    w.start(&b);
+    w.put(w.shared("saves").join("World One").join("session.lock"), "locked");
+    set_kind_in(&w.mother, &w.root, Kind::Saves, false, &[]).unwrap();
+    assert_eq!(read(b.dir.join("games").join(ACCOUNT).join("saves").join("World One").join("level.dat")), "w1");
+    assert!(!b.dir.join("games").join(ACCOUNT).join("saves").join("World One").join("session.lock").exists());
 }

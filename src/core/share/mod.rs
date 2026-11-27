@@ -80,6 +80,11 @@ impl Own {
 }
 
 /// What the instance in folder `dir` takes part in now.
+/// Whether `path` is a folder the sync links to the shared one.
+pub(crate) fn is_linked(path: &Path) -> bool {
+    is_link(path)
+}
+
 pub fn flags(dir: &Path) -> Flags {
     flags_in(&Mother::current(), dir)
 }
@@ -314,7 +319,10 @@ fn transition(mother: &Mother, root: &Path, before: Vec<(Instance, Flags)>, runn
 }
 
 /// Deletes what the sync folder holds of every kind that is off, once every instance has its own copy.
-fn clear_unused(mother: &Mother, state: &State) {
+fn clear_unused(mother: &Mother, root: &Path, state: &State) {
+    if root.join(".trash").read_dir().is_ok_and(|mut e| e.next().is_some()) {
+        return;
+    }
     for kind in KINDS.into_iter().filter(|k| !(state.on && state.get(*k))) {
         let path = mother.path(kind.rel());
         let _ = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
@@ -333,6 +341,9 @@ pub(crate) fn setup_in(mother: &Mother, root: &Path, mother_id: &str, running: &
         bail!(trf("Schließ zuerst die Instanz „%@“, ihr Stand wird der gemeinsame.", &[&base.name]));
     }
     let before = before(mother, root)?;
+    if base.sync_out {
+        save(root, Instance { sync_out: false, ..base.clone() })?;
+    }
     let own = Own { id: base.id.clone(), name: base.name.clone(), dir: instance::dir_in(root, &base.id) };
     inbound_in(mother, &own, false)?;
     super::sync::with_templates(|| {
@@ -360,7 +371,7 @@ pub(crate) fn turn_off_in(mother: &Mother, root: &Path, running: &[String]) -> R
     state::write(mother, &now)?;
     let all = transition(mother, root, before, running);
     if all && running.is_empty() {
-        clear_unused(mother, &now);
+        clear_unused(mother, root, &now);
     }
     Ok(())
 }
@@ -385,17 +396,19 @@ pub(crate) fn set_kind_in(mother: &Mother, root: &Path, kind: Kind, on: bool, ru
         }
         let own = Own { id: base.id.clone(), name: base.name.clone(), dir: instance::dir_in(root, &base.id) };
         inbound_in(mother, &own, false)?;
-        super::sync::with_templates(|| {
-            let _held = mother.lock()?;
-            seed(mother, &own, &base.game_version, &[kind])
-        })?;
+        if !base.sync_out {
+            super::sync::with_templates(|| {
+                let _held = mother.lock()?;
+                seed(mother, &own, &base.game_version, &[kind])
+            })?;
+        }
         now.mother = Some(base.id);
     }
     now = now.with(kind, on);
     state::write(mother, &now)?;
     let all = transition(mother, root, before, running);
     if all && running.is_empty() {
-        clear_unused(mother, &now);
+        clear_unused(mother, root, &now);
     }
     Ok(())
 }

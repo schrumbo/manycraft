@@ -17,6 +17,16 @@ impl Legacy {
     }
 }
 
+#[derive(Deserialize)]
+struct OldRecord {
+    base: String,
+}
+
+fn old_base(mother: &Mother) -> Option<String> {
+    let records: Vec<OldRecord> = serde_json::from_slice(&fs::read(mother.path("setups.json")).ok()?).ok()?;
+    records.into_iter().next().map(|r| r.base)
+}
+
 const OBSOLETE: [&str; 3] = ["history", "setups.json", "notes.json"];
 const SERVERS_FILE: &str = super::super::sync::SERVERS_FILE;
 
@@ -31,6 +41,7 @@ pub(crate) fn migrate_in(mother: &Mother, root: &Path) -> Result<bool> {
     if state::exists(mother) {
         return Ok(false);
     }
+    let base = old_base(mother);
     for name in OBSOLETE {
         let path = mother.path(name);
         let _ = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
@@ -41,8 +52,7 @@ pub(crate) fn migrate_in(mother: &Mother, root: &Path) -> Result<bool> {
     if on.is_empty() {
         return Ok(false);
     }
-    let mother_id = all.iter().find(|i| legacy(i).any()).map(|i| i.id.clone());
-    state::write(mother, &State { on: true, options: on.iter().any(|l| l.options), config: on.iter().any(|l| l.config), saves: false, screenshots: false, mother: mother_id })?;
+    let mother_id = base.filter(|b| all.iter().any(|i| &i.id == b && legacy(i).any())).or_else(|| all.iter().find(|i| legacy(i).any()).map(|i| i.id.clone()));
     for mut made in all {
         let before = legacy(&made);
         let dir = instance::dir_in(root, &made.id);
@@ -55,8 +65,13 @@ pub(crate) fn migrate_in(mother: &Mother, root: &Path) -> Result<bool> {
             }
         }
         made.sync_out = !before.any();
-        made.kept.remove("sync");
         instance::save_in(root, &made)?;
+    }
+    state::write(mother, &State { on: true, options: on.iter().any(|l| l.options), config: on.iter().any(|l| l.config), saves: false, screenshots: false, mother: mother_id })?;
+    for mut made in instance::load_all_in(root)? {
+        if made.kept.remove("sync").is_some() {
+            instance::save_in(root, &made)?;
+        }
     }
     let _ = fs::remove_file(mother.path(SERVERS_FILE));
     Ok(true)

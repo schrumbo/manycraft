@@ -9,6 +9,7 @@ pub(super) fn settle(path: &Path, shared: &Path, on: bool) -> Result<()> {
     match (on, linked) {
         (true, false) => join(path, shared),
         (false, true) => leave(path, shared),
+        (false, false) if fs::symlink_metadata(path).is_err() => recover(path),
         _ => Ok(()),
     }
 }
@@ -44,6 +45,14 @@ fn leave(path: &Path, shared: &Path) -> Result<()> {
     fs::rename(&fresh, path).with_context(|| format!("cannot move {} to {}", fresh.display(), path.display()))
 }
 
+fn recover(path: &Path) -> Result<()> {
+    let fresh = path.with_file_name(format!("{}.own-new", path.file_name().context("path has no name")?.to_string_lossy()));
+    if fs::symlink_metadata(&fresh).is_ok() {
+        fs::rename(&fresh, path).with_context(|| format!("cannot move {} to {}", fresh.display(), path.display()))?;
+    }
+    Ok(())
+}
+
 /// `<name>.<suffix>` next to `path`, or the first `<name>.<suffix>-N` nothing is at.
 pub(super) fn first_free(path: &Path, suffix: &str) -> Result<PathBuf> {
     let name = path.file_name().context("path has no name")?.to_string_lossy().into_owned();
@@ -63,7 +72,7 @@ pub(super) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
         let dest = to.join(entry.file_name());
         if kind.is_dir() && !is_link(&entry.path()) {
             copy_tree(&entry.path(), &dest)?;
-        } else if kind.is_file() {
+        } else if kind.is_file() && entry.file_name() != "session.lock" {
             fs::copy(entry.path(), &dest).with_context(|| format!("cannot copy {}", entry.path().display()))?;
         }
     }
