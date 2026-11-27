@@ -99,7 +99,7 @@ impl Runtime {
                 Update::Preparing { batch, progress } => Report::Preparing { batch, progress },
                 Update::Prepared { batch } => Report::Prepared { batch },
                 Update::Launched { key, plain } => Report::Launched { key, plain },
-                Update::Failed { key, reason, login, offline } => Report::Failed { key, reason, login, offline },
+                Update::Failed { key, reason, login, offline, transient } => Report::Failed { key, reason, login, offline, transient },
                 Update::Reach { online } => Report::Reach { online },
                 Update::Seed { key, phase, attempts } => Report::Seed { key, phase, attempts },
                 Update::SignIn { account, valid } => Report::SignIn { account, valid },

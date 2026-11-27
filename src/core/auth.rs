@@ -33,6 +33,9 @@ const DEFAULT_INTERVAL: u64 = 5;
 const SLOW_DOWN_STEP: u64 = 5;
 const TRANSPORT_FAILURES: u32 = 3;
 const RATE_ATTEMPTS: u32 = 5;
+const RETRY_BUDGET: Duration = Duration::from_secs(120);
+const OUTAGE_HOLD: Duration = Duration::from_secs(60);
+const PROXY_BACKOFF_SECS: [u64; 4] = [2, 4, 8, 16];
 const CANCEL_SLICE: Duration = Duration::from_millis(100);
 const OFFLINE_LIFETIME: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
 const SESSION_MARGIN: Duration = Duration::from_secs(10 * 60);
@@ -53,6 +56,7 @@ pub enum AuthError {
     AppNotApproved,
     GameNotOwned,
     Cancelled,
+    Unavailable,
 }
 
 impl fmt::Display for AuthError {
@@ -70,11 +74,17 @@ impl fmt::Display for AuthError {
             Self::AppNotApproved => f.write_str("Minecraft services rejected this app registration: the client id must be approved by Mojang (https://aka.ms/AppRegInfo)"),
             Self::GameNotOwned => f.write_str("this account does not own Minecraft: Java Edition, or has no profile yet"),
             Self::Cancelled => f.write_str("the sign-in was cancelled"),
+            Self::Unavailable => f.write_str("Microsoft or Minecraft sign-in services are not answering right now, try again later"),
         }
     }
 }
 
 impl std::error::Error for AuthError {}
+
+/// Whether `e` is a sign-in that failed only because Microsoft, Xbox or Minecraft services kept failing for a while; a later try may work.
+pub fn unavailable(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<AuthError>() == Some(&AuthError::Unavailable)
+}
 
 pub(crate) fn sleep_unless(cancel: &AtomicBool, total: Duration) {
     let end = Instant::now() + total;
@@ -189,19 +199,31 @@ pub struct Flow {
     ep: Endpoints,
     client_id: String,
     pause: fn(Duration),
+    clock: fn() -> Instant,
+    reach: fn() -> bool,
+    proxied: bool,
+    pacing: &'static Mutex<Pacing>,
 }
 
-static COOLDOWN: Mutex<Cooldown> = Mutex::new(Cooldown::new());
-
-fn cooldown() -> std::sync::MutexGuard<'static, Cooldown> {
-    COOLDOWN.lock().unwrap_or_else(PoisonError::into_inner)
+/// What all sign-ins share about the services: their "too many requests" cooldown, and until when they count as down.
+struct Pacing {
+    cooldown: Cooldown,
+    down_until: Option<Instant>,
 }
+
+impl Pacing {
+    const fn new() -> Self {
+        Self { cooldown: Cooldown::new(), down_until: None }
+    }
+}
+
+static PACING: Mutex<Pacing> = Mutex::new(Pacing::new());
 
 impl Flow {
     /// Prepares a flow whose every request goes through `proxy`, or the environment's proxy without one.
     pub fn new(proxy: Option<&str>) -> Result<Self> {
         let client_id = client_id();
-        Ok(Self { agent: net::agent(proxy)?, ep: Endpoints::for_client(&client_id), client_id, pause: std::thread::sleep })
+        Ok(Self { agent: net::agent(proxy)?, ep: Endpoints::for_client(&client_id), client_id, pause: std::thread::sleep, clock: Instant::now, reach: online::reachable, proxied: proxy.is_some(), pacing: &PACING })
     }
 
     /// Asks Microsoft for a device code.
@@ -282,47 +304,83 @@ impl Flow {
     /// Trades a saved refresh token for fresh Microsoft tokens; the new refresh token replaces the old one.
     pub fn refresh(&self, refresh_token: &str) -> Result<Tokens> {
         let form = [("grant_type", "refresh_token"), ("client_id", &self.client_id), ("refresh_token", refresh_token), ("scope", self.ep.scope)];
-        token_refresh(&self.paced(|| post_form(&self.agent, &self.ep.token_url, &form))?)
+        token_refresh(&self.paced("Microsoft", || post_form(&self.agent, &self.ep.token_url, &form))?)
     }
 
-    /// Sends a request to Microsoft, Xbox or Minecraft services that are known to throttle bursts: when one answers
-    /// "too many requests", all requests wait, longer each time, and this one is sent again, up to five times.
-    fn paced(&self, send: impl Fn() -> Result<Reply>) -> Result<Reply> {
-        let mut limited = 0;
+    fn pacing(&self) -> std::sync::MutexGuard<'static, Pacing> {
+        self.pacing.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Sends one request to Microsoft, Xbox or Minecraft services and sends it again while it fails for a passing
+    /// reason: a cut connection while the internet is there, "too many requests" (honouring Retry-After), a timeout or
+    /// a server error. Up to five tries within about two minutes; after that it fails with [`AuthError::Unavailable`],
+    /// and for a minute every other sign-in gives up on its first such failure. Throttling and server errors make all
+    /// requests wait; a failing proxy only slows its own account and ends with its own error. Answers that end the
+    /// sign-in are returned at once.
+    fn paced(&self, what: &str, send: impl Fn() -> Result<Reply>) -> Result<Reply> {
+        let mut waited = Duration::ZERO;
+        let mut own = Duration::ZERO;
+        let mut tries = 0;
         loop {
-            let wait = cooldown().wait(Instant::now());
+            let wait = self.pacing().cooldown.wait((self.clock)()).max(own);
             if !wait.is_zero() {
                 (self.pause)(wait);
+                waited += wait;
             }
-            let reply = send()?;
-            if reply.status != 429 {
-                cooldown().answered();
-                return Ok(reply);
-            }
-            cooldown().limited(Instant::now(), reply.retry_after, reconnect::unit());
-            limited += 1;
-            if limited >= RATE_ATTEMPTS {
-                return Ok(reply);
+            tries += 1;
+            let (failure, next, shared) = match send() {
+                Ok(reply) if !transient(&reply) => {
+                    let mut pacing = self.pacing();
+                    pacing.cooldown.answered();
+                    pacing.down_until = None;
+                    return Ok(reply);
+                }
+                Ok(reply) => {
+                    own = Duration::ZERO;
+                    let next = self.pacing().cooldown.limited((self.clock)(), reply.retry_after, reconnect::unit());
+                    (anyhow!("{what} answered with status {}", reply.status), next, true)
+                }
+                Err(e) if net::no_connection(&e) && self.proxied => {
+                    own = reconnect::wait(&PROXY_BACKOFF_SECS, tries - 1, 25, reconnect::unit());
+                    (e, own, false)
+                }
+                Err(e) if net::no_connection(&e) && (self.reach)() => {
+                    let next = self.pacing().cooldown.limited((self.clock)(), None, reconnect::unit());
+                    (e, next, true)
+                }
+                Err(e) => return Err(e),
+            };
+            let now = (self.clock)();
+            let mut pacing = self.pacing();
+            let down = shared && pacing.down_until.is_some_and(|until| now < until);
+            if down || tries >= RATE_ATTEMPTS || waited + next > RETRY_BUDGET {
+                if !shared {
+                    return Err(failure);
+                }
+                if !down {
+                    pacing.down_until = Some(now + OUTAGE_HOLD);
+                }
+                return Err(failure.context(AuthError::Unavailable));
             }
         }
     }
 
     /// Runs the Xbox Live → XSTS → Minecraft chain and fetches the profile.
     pub fn session(&self, tokens: &Tokens) -> Result<Session> {
-        let xbl = xbox_token("Xbox Live", &self.paced(|| post_json(&self.agent, &self.ep.xbl, &json!({
+        let xbl = xbox_token("Xbox Live", &self.paced("Xbox Live", || post_json(&self.agent, &self.ep.xbl, &json!({
             "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": format!("{}{}", self.ep.rps_prefix, tokens.access_token)},
             "RelyingParty": "http://auth.xboxlive.com",
             "TokenType": "JWT",
         })))?)?;
-        let xsts = xbox_token("Xbox security service", &self.paced(|| post_json(&self.agent, &self.ep.xsts, &json!({
+        let xsts = xbox_token("Xbox security service", &self.paced("Xbox security service", || post_json(&self.agent, &self.ep.xsts, &json!({
             "Properties": {"SandboxId": "RETAIL", "UserTokens": [xbl.token]},
             "RelyingParty": XSTS_RELYING_PARTY,
             "TokenType": "JWT",
         })))?)?;
-        let mc = minecraft_login(&self.paced(|| post_json(&self.agent, &self.ep.mc_login, &json!({
+        let mc = minecraft_login(&self.paced("Minecraft services", || post_json(&self.agent, &self.ep.mc_login, &json!({
             "identityToken": format!("XBL3.0 x={};{}", xsts.uhs, xsts.token),
         })))?)?;
-        let profile = profile(&self.paced(|| get_bearer(&self.agent, &self.ep.mc_profile, &mc.access_token))?)?;
+        let profile = profile(&self.paced("Minecraft services", || get_bearer(&self.agent, &self.ep.mc_profile, &mc.access_token))?)?;
         Ok(assemble(profile, mc, SystemTime::now()))
     }
 }
@@ -356,7 +414,7 @@ fn microsoft_session(account: &Account) -> Result<Session> {
             keep_session(account, &session);
             Ok(session)
         }
-        Err(e) if net::no_connection(&e) => saved().ok_or(e),
+        Err(e) if net::no_connection(&e) || unavailable(&e) => saved().ok_or(e),
         Err(e) => Err(e),
     }
 }
@@ -727,18 +785,31 @@ fn token_refresh(reply: &Reply) -> Result<Tokens> {
 }
 
 fn xbox_failure(service: &str, reply: &Reply) -> anyhow::Error {
-    #[derive(Deserialize)]
-    struct Raw {
-        #[serde(rename = "XErr")]
-        code: Option<u64>,
-    }
-    match serde_json::from_slice::<Raw>(&reply.body).ok().and_then(|raw| raw.code) {
+    match xbox_code(reply) {
         Some(2_148_916_233) => AuthError::NoXboxProfile.into(),
         Some(2_148_916_235) => AuthError::RegionBlocked.into(),
         Some(2_148_916_236 | 2_148_916_237) => AuthError::AdultVerification.into(),
         Some(2_148_916_238) => AuthError::ChildAccount.into(),
         Some(code) => AuthError::XboxRejected(code).into(),
         None => anyhow!("{service} answered with status {}", reply.status),
+    }
+}
+
+fn xbox_code(reply: &Reply) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Raw {
+        #[serde(rename = "XErr")]
+        code: Option<u64>,
+    }
+    serde_json::from_slice::<Raw>(&reply.body).ok().and_then(|raw| raw.code)
+}
+
+/// Whether an answer says the service is busy or broken for now, so the same request may work later: throttled,
+/// timed out, a server error without an Xbox error code, or Microsoft saying it is temporarily unavailable.
+fn transient(reply: &Reply) -> bool {
+    match reply.status {
+        408 | 429 | 500 | 502 | 503 | 504 => xbox_code(reply).is_none(),
+        _ => oauth_error(reply).is_some_and(|e| matches!(e.error.as_str(), "temporarily_unavailable" | "server_error")),
     }
 }
 
@@ -1122,6 +1193,7 @@ mod tests {
             AuthError::XboxRejected(7),
             AuthError::AppNotApproved,
             AuthError::GameNotOwned,
+            AuthError::Unavailable,
         ];
         let texts: Vec<String> = all.iter().map(ToString::to_string).collect();
         for (i, a) in texts.iter().enumerate() {
@@ -1139,6 +1211,9 @@ mod tests {
     }
 
     type Routes = Vec<(&'static str, Vec<(u16, &'static str)>)>;
+
+    /// A canned status that closes the connection without an answer.
+    const DROP: u16 = 0;
 
     fn serve(routes: Routes) -> (String, Arc<Mutex<Vec<Seen>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1174,7 +1249,17 @@ mod tests {
                     Some(q) => *q.front().unwrap(),
                     None => (404, "{}"),
                 };
-                let head = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", text.len());
+                if status == DROP {
+                    continue;
+                }
+                let (extra, text) = match text.strip_prefix("Retry-After:") {
+                    Some(rest) => {
+                        let (secs, body) = rest.split_once('\n').unwrap();
+                        (format!("Retry-After: {}\r\n", secs.trim()), body)
+                    }
+                    None => (String::new(), text),
+                };
+                let head = format!("HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n", text.len());
                 stream.write_all(head.as_bytes()).unwrap();
                 stream.write_all(text.as_bytes()).unwrap();
             }
@@ -1198,8 +1283,28 @@ mod tests {
                 mc_profile: format!("{base}/mc/profile"),
             },
             client_id: "test-client".into(),
-            pause: |_| {},
+            pause: record,
+            clock: test_now,
+            reach: || true,
+            proxied: false,
+            pacing: Box::leak(Box::new(Mutex::new(Pacing::new()))),
         }
+    }
+
+    thread_local! {
+        static PAUSES: std::cell::RefCell<Vec<Duration>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn record(wait: Duration) {
+        PAUSES.with(|p| p.borrow_mut().push(wait));
+    }
+
+    fn test_now() -> Instant {
+        Instant::now() + pauses().iter().sum::<Duration>()
+    }
+
+    fn pauses() -> Vec<Duration> {
+        PAUSES.with(|p| p.borrow().clone())
     }
 
     fn live_flow(base: &str) -> Flow {
@@ -1257,7 +1362,7 @@ mod tests {
             ("/mc/profile", vec![(200, fixture!("profile_ok"))]),
         ]);
         let local = flow(&base);
-        let flow = Flow { ep: Endpoints { scope: LIVE_SCOPE, rps_prefix: "t=", ..local.ep }, client_id: LIVE_CLIENT_ID.into(), agent: local.agent, pause: local.pause };
+        let flow = Flow { ep: Endpoints { scope: LIVE_SCOPE, rps_prefix: "t=", ..local.ep }, client_id: LIVE_CLIENT_ID.into(), ..local };
         assert!(flow.has_window());
         assert!(!self::flow(&base).has_window());
         let tokens = flow.redeem("M.C540_BAY.2.U.code+/=").unwrap();
@@ -1506,13 +1611,13 @@ mod tests {
     fn a_request_that_stays_throttled_gives_up_after_five_tries() {
         let (base, seen) = serve(vec![("/xbl", vec![(429, "{}")])]);
         let tokens = Tokens { access_token: "T".into(), refresh_token: None };
-        assert!(flow(&base).session(&tokens).is_err());
+        assert!(unavailable(&fail(flow(&base).session(&tokens))));
         assert_eq!(requests(&seen, "/xbl").len(), RATE_ATTEMPTS as usize);
     }
 
     #[test]
     fn unowned_game_surfaces_from_the_chain() {
-        let (base, _) = serve(vec![
+        let (base, seen) = serve(vec![
             ("/xbl", vec![(200, fixture!("xbl_ok"))]),
             ("/xsts", vec![(200, fixture!("xsts_ok"))]),
             ("/mc/login", vec![(200, fixture!("mc_login_ok"))]),
@@ -1520,5 +1625,101 @@ mod tests {
         ]);
         let tokens = Tokens { access_token: "T".into(), refresh_token: None };
         assert_eq!(kind(&fail(flow(&base).session(&tokens))), Some(&AuthError::GameNotOwned));
+        assert_eq!(requests(&seen, "/mc/profile").len(), 1);
+        assert!(pauses().is_empty());
+    }
+
+    fn chain(xsts: Vec<(u16, &'static str)>, login: Vec<(u16, &'static str)>, profile: Vec<(u16, &'static str)>) -> Routes {
+        vec![("/xbl", vec![(200, fixture!("xbl_ok"))]), ("/xsts", xsts), ("/mc/login", login), ("/mc/profile", profile)]
+    }
+
+    fn secret_tokens() -> Tokens {
+        Tokens { access_token: "SECRET-MSA-ACCESS".into(), refresh_token: Some("SECRET-MSA-REFRESH".into()) }
+    }
+
+    #[test]
+    fn a_server_error_at_xsts_is_sent_again_once() {
+        let (base, seen) = serve(chain(vec![(503, "{}"), (200, fixture!("xsts_ok"))], vec![(200, fixture!("mc_login_ok"))], vec![(200, fixture!("profile_ok"))]));
+        assert!(flow(&base).session(&secret_tokens()).is_ok());
+        assert_eq!((requests(&seen, "/xbl").len(), requests(&seen, "/xsts").len()), (1, 2));
+        assert_eq!(pauses().len(), 1);
+    }
+
+    #[test]
+    fn a_throttled_minecraft_login_waits_as_long_as_asked() {
+        let (base, seen) = serve(chain(vec![(200, fixture!("xsts_ok"))], vec![(429, "Retry-After: 7\n{}"), (200, fixture!("mc_login_ok"))], vec![(200, fixture!("profile_ok"))]));
+        assert!(flow(&base).session(&secret_tokens()).is_ok());
+        assert_eq!(requests(&seen, "/mc/login").len(), 2);
+        assert_eq!(pauses().iter().map(|d| d.as_secs_f64().round() as u64).collect::<Vec<_>>(), [7]);
+    }
+
+    #[test]
+    fn a_cut_connection_at_the_profile_resends_only_the_profile_request() {
+        let (base, seen) = serve(chain(vec![(200, fixture!("xsts_ok"))], vec![(200, fixture!("mc_login_ok"))], vec![(DROP, ""), (200, fixture!("profile_ok"))]));
+        assert_eq!(flow(&base).session(&secret_tokens()).unwrap().name, "TestPlayer");
+        let counts = ["/xbl", "/xsts", "/mc/login", "/mc/profile"].map(|p| requests(&seen, p).len());
+        assert_eq!(counts, [1, 1, 1, 2]);
+    }
+
+    #[test]
+    fn a_cut_connection_without_internet_fails_at_once_as_no_connection() {
+        let (base, seen) = serve(chain(vec![(200, fixture!("xsts_ok"))], vec![(200, fixture!("mc_login_ok"))], vec![(DROP, "")]));
+        let e = fail(Flow { reach: || false, ..flow(&base) }.session(&secret_tokens()));
+        assert!(net::no_connection(&e) && !unavailable(&e), "{e:#}");
+        assert_eq!(requests(&seen, "/mc/profile").len(), 1);
+        assert!(pauses().is_empty());
+    }
+
+    #[test]
+    fn a_service_that_stays_down_ends_unavailable_after_five_tries_and_others_give_up_at_once() {
+        let (base, seen) = serve(vec![("/xbl", vec![(503, "{}")])]);
+        let flow = flow(&base);
+        let e = fail(flow.session(&secret_tokens()));
+        assert!(unavailable(&e) && kind(&e) == Some(&AuthError::Unavailable), "{e:#}");
+        assert!(e.chain().any(|c| c.to_string().contains("503")), "{e:#}");
+        let shown = format!("{e:#} {e:?}");
+        assert!(!shown.contains("SECRET"), "{shown}");
+        assert_eq!(requests(&seen, "/xbl").len(), 5);
+        assert_eq!(pauses().len(), 4);
+        assert!(pauses().iter().sum::<Duration>() <= RETRY_BUDGET);
+        assert!(unavailable(&fail(flow.session(&secret_tokens()))));
+        assert_eq!(requests(&seen, "/xbl").len(), 6);
+    }
+
+    #[test]
+    fn a_dead_proxy_ends_with_its_own_error_and_slows_no_other_account() {
+        let (base, seen) = serve(chain(vec![(200, fixture!("xsts_ok"))], vec![(200, fixture!("mc_login_ok"))], vec![(DROP, "")]));
+        let proxied = Flow { proxied: true, ..flow(&base) };
+        let e = fail(proxied.session(&secret_tokens()));
+        assert!(net::no_connection(&e) && !unavailable(&e), "{e:#}");
+        assert_eq!(requests(&seen, "/mc/profile").len(), 5);
+        let (base, _) = serve(chain(vec![(503, "{}"), (200, fixture!("xsts_ok"))], vec![(200, fixture!("mc_login_ok"))], vec![(200, fixture!("profile_ok"))]));
+        assert!(Flow { proxied: false, ..flow(&base) }.session(&secret_tokens()).is_ok());
+    }
+
+    #[test]
+    fn a_dead_refresh_token_is_not_sent_again() {
+        let (base, seen) = serve(vec![("/oauth/token", vec![(400, r#"{"error":"invalid_grant"}"#)])]);
+        assert_eq!(kind(&fail(flow(&base).refresh("SECRET-OLD"))), Some(&AuthError::SignInAgain));
+        assert_eq!(requests(&seen, "/oauth/token").len(), 1);
+        assert!(pauses().is_empty());
+    }
+
+    #[test]
+    fn a_temporarily_unavailable_refresh_is_sent_again() {
+        let (base, seen) = serve(vec![("/oauth/token", vec![(400, r#"{"error":"temporarily_unavailable"}"#), (200, fixture!("token_ok"))])]);
+        assert!(flow(&base).refresh("SECRET-OLD").is_ok());
+        assert_eq!(requests(&seen, "/oauth/token").len(), 2);
+    }
+
+    #[test]
+    fn xbox_error_codes_and_a_refused_minecraft_login_end_at_once() {
+        let (base, seen) = serve(chain(vec![(503, fixture!("xsts_2148916233"))], vec![], vec![]));
+        assert_eq!(kind(&fail(flow(&base).session(&secret_tokens()))), Some(&AuthError::NoXboxProfile));
+        assert_eq!(requests(&seen, "/xsts").len(), 1);
+        let (base, seen) = serve(chain(vec![(200, fixture!("xsts_ok"))], vec![(403, "{}")], vec![]));
+        assert_eq!(kind(&fail(flow(&base).session(&secret_tokens()))), Some(&AuthError::AppNotApproved));
+        assert_eq!(requests(&seen, "/mc/login").len(), 1);
+        assert!(pauses().is_empty());
     }
 }

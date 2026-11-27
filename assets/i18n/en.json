@@ -2433,5 +2433,7 @@
   "Kacheln aktualisieren": "Tile refresh",
   "Auf diesem Computer": "On this computer",
   "Arbeitsspeicher beim Start": "Memory at start",
-  "Schickt Discord, Telegram oder ntfy eine Nachricht, gesammelt pro Batch. Unabhängig vom Schalter „Auf diesem Computer“.": "Sends a message through Discord, Telegram or ntfy, grouped per batch. Works whether or not “On this computer” is on."
+  "Schickt Discord, Telegram oder ntfy eine Nachricht, gesammelt pro Batch. Unabhängig vom Schalter „Auf diesem Computer“.": "Sends a message through Discord, Telegram or ntfy, grouped per batch. Works whether or not “On this computer” is on.",
+  "Anmeldung gestört · neuer Versuch gleich (%lld von %lld)": "Sign-in disrupted · trying again shortly (%lld of %lld)",
+  "Anmeldung gestört": "Sign-in disrupted"
 }

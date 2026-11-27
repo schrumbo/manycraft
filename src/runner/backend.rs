@@ -39,7 +39,7 @@ pub enum Update<P> {
     /// The game is installed; the accounts of `batch` wait in line to start.
     Prepared { batch: String },
     Launched { key: String, plain: bool },
-    Failed { key: String, reason: String, login: bool, offline: bool },
+    Failed { key: String, reason: String, login: bool, offline: bool, transient: bool },
     /// Whether the connection came back (`true`) or is gone.
     Reach { online: bool },
     Ipc(Event),
@@ -253,7 +253,7 @@ impl<P: Pixels> Backend for Real<P> {
                 for account in &accounts {
                     let key = target.key(account.id);
                     if mine(&key) {
-                        let _ = out.send_blocking(Update::Failed { key, reason: reason.clone(), login: false, offline: cut_off(&e, account) });
+                        let _ = out.send_blocking(Update::Failed { key, reason: reason.clone(), login: false, offline: cut_off(&e, account), transient: false });
                     }
                 }
             };
@@ -304,7 +304,7 @@ impl<P: Pixels> Backend for Real<P> {
                     }
                     Err(e) => {
                         release(key);
-                        Some(Update::Failed { key: key.clone(), login: needs_sign_in(&e), offline: cut_off(&e, account), reason: format!("{e:#}") })
+                        Some(Update::Failed { key: key.clone(), login: needs_sign_in(&e), offline: cut_off(&e, account), transient: auth::unavailable(&e), reason: format!("{e:#}") })
                     }
                 };
                 if let Some(update) = update {

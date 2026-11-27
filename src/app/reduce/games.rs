@@ -25,6 +25,8 @@ const KEPT_CHAT: usize = 5000;
 const BACK_STAGGER: Duration = Duration::from_secs(1);
 const BACK_WAIT_SECS: u64 = 2;
 const WAITING_RETRY_SECS: u64 = 60;
+const SIGN_IN_ROUNDS: u32 = 3;
+const SIGN_IN_RETRY_SECS: [u64; 3] = [30, 60, 120];
 const PROBE_EVERY_SECS: u64 = 5;
 
 /// What a batch of reports leaves to do once every report is in the model, in the order it is done.
@@ -178,25 +180,43 @@ fn apply(m: &mut Model, env: &Env, report: Report, fx: &mut Fx) {
             m.meters.remove(&batch);
         }
         Report::Launched { key, plain } => {
+            m.session.sign_in_rounds.remove(&key);
             if m.games.get(&key).is_some_and(|i| !i.stopping) {
                 let to = if plain { Phase::Plain } else { Phase::Starting { place: 0, total: 0 } };
                 go(m, &key, to, Why::Launched, &mut fx.now);
             }
         }
-        Report::Failed { key, reason, login, offline } => {
+        Report::Failed { key, reason, login, offline, transient } => {
             if let Some(i) = m.games.get(&key) {
                 m.preparing.remove(&i.batch_id);
                 m.meters.remove(&i.batch_id);
             }
+            let round = m.session.sign_in_rounds.get(&key).copied().unwrap_or(0);
+            let again = transient && !login && !offline && round < SIGN_IN_ROUNDS;
             let to = if login {
                 Phase::LoginNeeded
             } else if offline {
                 Phase::NoNetwork
+            } else if again {
+                Phase::SignInWait { attempt: round + 1, of: SIGN_IN_ROUNDS }
+            } else if transient {
+                Phase::Failed { reason: tr("Anmeldung gestört") }
             } else {
-                Phase::Failed { reason }
+                Phase::Failed { reason: reason.clone() }
             };
-            if go(m, &key, to, Why::StartFailed, &mut fx.now) && offline && !login {
-                fx.later.push(Later::After(waiting_retry(env), Event::WaitingStartDue { key }));
+            let failed = matches!(to, Phase::Failed { .. });
+            if go(m, &key, to, Why::StartFailed, &mut fx.now) {
+                if offline && !login {
+                    fx.later.push(Later::After(waiting_retry(env), Event::WaitingStartDue { key: key.clone() }));
+                } else if again {
+                    m.session.sign_in_rounds.insert(key.clone(), round + 1);
+                    fx.later.push(Later::After(sign_in_retry(env, round), Event::WaitingStartDue { key: key.clone() }));
+                } else if failed {
+                    note(m, env, fx, &key, Kind::StartFailed, None, &reason);
+                }
+            }
+            if !again && !offline {
+                m.session.sign_in_rounds.remove(&key);
             }
             fx.suspect_offline |= offline;
         }
@@ -678,6 +698,10 @@ fn on_reach(m: &mut Model, env: &Env, fx: &mut Fx, online: bool) {
 
 fn waiting_retry(env: &Env) -> Duration {
     reconnect::wait(&[WAITING_RETRY_SECS], 0, 20, env.unit())
+}
+
+fn sign_in_retry(env: &Env, round: u32) -> Duration {
+    reconnect::wait(&SIGN_IN_RETRY_SECS, round, 20, env.unit())
 }
 
 /// Whether `server` is on this computer or in the home network, which works without the internet.
@@ -1193,7 +1217,7 @@ mod tests {
     fn a_start_without_connection_waits_and_starts_when_it_is_back_unless_stopped() {
         let s = settings();
         let (mut m, key) = setup(Phase::Starting { place: 1, total: 1 }, AccountKind::Microsoft, &[]);
-        let fx = report(&mut m, &s, Report::Failed { key: key.clone(), reason: "failed to lookup address".into(), login: false, offline: true });
+        let fx = report(&mut m, &s, Report::Failed { key: key.clone(), reason: "failed to lookup address".into(), login: false, offline: true, transient: false });
         assert_eq!(m.games[&key].phase, Phase::NoNetwork);
         assert!(suspects(&fx) && !m.games[&key].phase.is_running() && !m.games[&key].phase.needs_attention());
         let waits = timers(&fx);
@@ -1201,8 +1225,59 @@ mod tests {
         assert!(waiting == &key && delay.as_secs() >= 48);
         let fx = report(&mut m, &s, Report::Reach { online: true });
         assert!(fx.iter().any(|e| matches!(e, Effect::Start { accounts, .. } if accounts.len() == 1 && accounts[0].id == account(&m))));
-        report(&mut m, &s, Report::Failed { key: key.clone(), reason: "bad jar".into(), login: false, offline: false });
+        report(&mut m, &s, Report::Failed { key: key.clone(), reason: "bad jar".into(), login: false, offline: false, transient: false });
         assert!(matches!(m.games[&key].phase, Phase::Failed { .. }));
+    }
+
+    fn sign_in_down(key: &str) -> Report {
+        Report::Failed { key: key.into(), reason: "sign-in services are not answering: Xbox Live answered with status 503".into(), login: false, offline: false, transient: true }
+    }
+
+    #[test]
+    fn a_sign_in_outage_waits_three_rounds_then_fails_and_is_kept_in_the_history() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Starting { place: 1, total: 1 }, AccountKind::Microsoft, &[]);
+        for round in 1..=3 {
+            let fx = report(&mut m, &s, sign_in_down(&key));
+            let phase = &m.games[&key].phase;
+            assert_eq!(*phase, Phase::SignInWait { attempt: round, of: 3 });
+            assert!(!phase.needs_attention() && phase.stoppable() && !phase.is_running());
+            let waits = timers(&fx);
+            let [(delay, Event::WaitingStartDue { key: waiting })] = waits.as_slice() else { panic!("round {round} has no timer") };
+            assert!(waiting == &key && delay.as_secs() >= 24, "{delay:?}");
+            let fx = run(&mut m, &s, Instant::now(), Event::WaitingStartDue { key: key.clone() });
+            assert!(fx.iter().any(|e| matches!(e, Effect::Start { .. })), "round {round} did not start again");
+        }
+        let fx = report(&mut m, &s, sign_in_down(&key));
+        assert!(matches!(&m.games[&key].phase, Phase::Failed { reason } if !reason.contains("503")));
+        assert!(timers(&fx).is_empty());
+        let last = m.history[&key].back().unwrap();
+        assert!(last.kind == Kind::StartFailed && last.reason.contains("503"), "{last:?}");
+        assert!(!m.session.sign_in_rounds.contains_key(&key));
+    }
+
+    #[test]
+    fn a_dead_login_never_waits_for_a_retry() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Starting { place: 1, total: 1 }, AccountKind::Microsoft, &[]);
+        let fx = report(&mut m, &s, Report::Failed { key: key.clone(), reason: "sign in again".into(), login: true, offline: false, transient: false });
+        assert_eq!(m.games[&key].phase, Phase::LoginNeeded);
+        assert!(timers(&fx).is_empty() && m.session.sign_in_rounds.is_empty());
+    }
+
+    #[test]
+    fn a_launch_or_a_stop_starts_the_sign_in_rounds_over() {
+        let s = settings();
+        let (mut m, key) = setup(Phase::Starting { place: 1, total: 1 }, AccountKind::Microsoft, &[]);
+        report(&mut m, &s, sign_in_down(&key));
+        run(&mut m, &s, Instant::now(), Event::WaitingStartDue { key: key.clone() });
+        report(&mut m, &s, Report::Launched { key: key.clone(), plain: false });
+        assert!(m.session.sign_in_rounds.is_empty());
+        m.games.get_mut(&key).unwrap().phase = Phase::Starting { place: 1, total: 1 };
+        report(&mut m, &s, sign_in_down(&key));
+        run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
+        assert_eq!(m.games[&key].phase, Phase::Stopped);
+        assert!(m.session.sign_in_rounds.is_empty());
     }
 
     #[test]
@@ -1250,7 +1325,7 @@ mod tests {
         let (mut m, key) = setup(Phase::Starting { place: 2, total: 3 }, AccountKind::Microsoft, &[]);
         run(&mut m, &s, Instant::now(), Event::Stop(vec![key.clone()]));
         assert_eq!(m.games[&key].phase, Phase::Stopped);
-        report(&mut m, &s, Report::Failed { key: key.clone(), reason: "cancelled".into(), login: false, offline: true });
+        report(&mut m, &s, Report::Failed { key: key.clone(), reason: "cancelled".into(), login: false, offline: true, transient: false });
         assert_eq!(m.games[&key].phase, Phase::Stopped);
         report(&mut m, &s, Report::Launched { key: key.clone(), plain: false });
         assert_eq!(m.games[&key].phase, Phase::Stopped);
