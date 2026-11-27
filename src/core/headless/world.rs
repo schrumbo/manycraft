@@ -11,7 +11,7 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use serde_json::Value;
 
-use super::render::{Biome, Sky};
+use super::render::{Biome, Environment, Sky};
 use super::v777::{BLOCK_LOOKS, BLOCK_STATES};
 use super::wire::{In, Out};
 
@@ -100,7 +100,7 @@ pub struct World {
     chunks: HashMap<(i32, i32), Arc<[u8]>>,
     kept: usize,
     changes: HashMap<[i32; 3], u32>,
-    types: Vec<Dimension>,
+    types: Vec<(Dimension, Environment)>,
     dimension: Dimension,
     biomes: Arc<[Biome]>,
     relit: HashMap<(i32, i32), Relit>,
@@ -149,7 +149,7 @@ pub struct Snapshot {
 }
 
 impl World {
-    /// Reads the height ranges of the dimension types from the server's `minecraft:dimension_type` registry, whose name is already read.
+    /// Reads the height ranges and the light and sky rules of the dimension types from the server's `minecraft:dimension_type` registry, whose name is already read.
     /// Ranges the game itself would not accept read as the overworld's; types past the first 256 are not kept.
     pub fn dimension_types(&mut self, r: &mut In) -> Result<()> {
         self.types.clear();
@@ -159,7 +159,7 @@ impl World {
             let field = |key: &str| data.as_ref().and_then(|d| d.get(key)).and_then(Value::as_i64).and_then(|v| i32::try_from(v).ok());
             let found = field("min_y").zip(field("height")).map(|(floor, height)| Dimension { floor, height }).filter(Dimension::sane);
             if self.types.len() < MAX_TYPES {
-                self.types.push(found.unwrap_or_default());
+                self.types.push((found.unwrap_or_default(), data.as_ref().map(Environment::from_json).unwrap_or_default()));
             }
         }
         Ok(())
@@ -228,7 +228,8 @@ impl World {
     /// The account entered the dimension of type `id` (on login or respawn): what it saw before is gone.
     pub fn enter(&mut self, id: i32) {
         self.clear();
-        self.dimension = usize::try_from(id).ok().and_then(|i| self.types.get(i)).copied().unwrap_or_default();
+        let (dimension, environment) = usize::try_from(id).ok().and_then(|i| self.types.get(i)).copied().unwrap_or_default();
+        (self.dimension, self.sky.environment) = (dimension, environment);
     }
 
     /// Forgets every chunk and change, and the weather.
@@ -943,6 +944,42 @@ mod tests {
         reg.0
     }
 
+    fn nbt_string(out: &mut Vec<u8>, key: &str, value: &str) {
+        out.push(8);
+        out.extend((key.len() as u16).to_be_bytes());
+        out.extend(key.as_bytes());
+        out.extend((value.len() as u16).to_be_bytes());
+        out.extend(value.as_bytes());
+    }
+
+    #[test]
+    fn entering_a_dimension_takes_its_light_and_sky_rules_and_leaving_drops_them() {
+        let mut reg = Out::default();
+        reg.varint(2);
+        for (name, skybox) in [("minecraft:overworld", "overworld"), ("minecraft:the_nether", "none")] {
+            reg.string(name).bool(true);
+            let mut nbt = vec![10];
+            nbt_int(&mut nbt, "min_y", 0);
+            nbt_int(&mut nbt, "height", 256);
+            nbt_string(&mut nbt, "skybox", skybox);
+            nbt_string(&mut nbt, "cardinal_light", if skybox == "none" { "nether" } else { "default" });
+            nbt.push(0);
+            reg.raw(&nbt);
+        }
+        let mut w = World::default();
+        w.dimension_types(&mut In::new(&reg.0)).unwrap();
+        assert_eq!(w.snapshot(0.0, 0.0, 0).sky.environment, Environment::default(), "before any dimension is entered");
+        w.enter(1);
+        use crate::core::headless::render::{Cardinal, Skybox};
+        let nether = w.snapshot(0.0, 0.0, 0).sky.environment;
+        assert_eq!((nether.skybox, nether.cardinal), (Skybox::None, Cardinal::Nether));
+        w.enter(0);
+        assert_eq!(w.snapshot(0.0, 0.0, 0).sky.environment.skybox, Skybox::Overworld);
+        w.enter(1);
+        w.enter(9);
+        assert_eq!(w.snapshot(0.0, 0.0, 0).sky.environment, Environment::default(), "an unknown type reads as the overworld");
+    }
+
     fn light_update(x: i32, z: i32, sky_bits: &[u8], block_bits: &[u8], sky: usize, block: usize) -> Vec<u8> {
         let mut out = Out::default();
         out.varint(x).varint(z).bytes(sky_bits).bytes(block_bits).bytes(&[]).bytes(&[]);
@@ -1013,7 +1050,7 @@ mod tests {
         for (event, value) in [(1, 0.0), (2, 0.0), (8, 0.5)] {
             w.weather(event, value);
         }
-        assert_eq!(w.snapshot(0.0, 0.0, 1).sky, Sky { time: Some(13_000), rain: 1.0, thunder: 0.5 });
+        assert_eq!(w.snapshot(0.0, 0.0, 1).sky, Sky { time: Some(13_000), rain: 1.0, thunder: 0.5, environment: Environment::default() });
     }
 
     #[test]

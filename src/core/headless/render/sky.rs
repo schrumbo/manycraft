@@ -4,8 +4,9 @@
 use std::f32::consts::{PI, TAU};
 use std::sync::OnceLock;
 
-use super::Biome;
 use super::assets::Assets;
+use super::environment::{Environment, Skybox};
+use super::Biome;
 use super::light::track;
 use super::random::Legacy;
 use super::raster::Target;
@@ -93,19 +94,24 @@ pub struct Atmosphere {
     clear: f32,
     sky_end: f32,
     dark: bool,
+    skybox: Skybox,
 }
 
 impl Atmosphere {
     /// `ticks` is the day time the server sent, `distance` the render distance in chunks, `forward` the view
     /// direction and `eye` the eye height.
-    pub fn new(ticks: i64, rain: f32, thunder: f32, biome: &Biome, distance: u8, forward: [f32; 3], eye: f64) -> Self {
+    pub fn new(ticks: i64, rain: f32, thunder: f32, biome: &Biome, env: &Environment, distance: u8, forward: [f32; 3], eye: f64) -> Self {
         let time = ticks.rem_euclid(24000) as f32;
         let sun = sun_angle(time);
+        let day = env.follows_the_day();
+        let (rain, thunder) = if day { (rain, thunder) } else { (0.0, 0.0) };
         let wet = (rain - thunder).max(0.0);
-        let mut sky = rgb(biome.sky.unwrap_or(DEFAULT_SKY)).map(|c| c * track(&SKY_MULTIPLIER, time));
-        let mut fog = times(rgb(biome.fog.unwrap_or(DEFAULT_FOG)), mix(FOG_NIGHT, [1.0; 3], track(&SKY_MULTIPLIER, time)));
-        let mut glow = glow_at(time);
-        let mut stars = track(&STARS, time);
+        let light = if day { track(&SKY_MULTIPLIER, time) } else { 1.0 };
+        let sky_color = biome.sky.or(env.sky).or(day.then_some(DEFAULT_SKY));
+        let mut sky = rgb(sky_color.unwrap_or(0)).map(|c| c * light);
+        let mut fog = times(rgb(biome.fog.or(env.fog).unwrap_or(DEFAULT_FOG)), mix(FOG_NIGHT, [1.0; 3], light));
+        let mut glow = if day { glow_at(time) } else { [0.0; 4] };
+        let mut stars = if day { track(&STARS, time) } else { 0.0 };
         if wet > 0.0 {
             sky = mix(sky, gray(sky, 0.6, 0.75), wet);
             fog = mix(fog, times(fog, [0.5, 0.5, 0.6]), wet);
@@ -130,7 +136,7 @@ impl Atmosphere {
         let darkened = [sky[0] * (1.0 - 0.5 * rain), sky[1] * (1.0 - 0.5 * rain), sky[2] * (1.0 - 0.4 * rain)].map(|c| c * (1.0 - 0.5 * thunder));
         let chunks = f32::from(distance).min(32.0);
         let blend = 1.0 - (0.25 + 0.75 * (chunks / 32.0).clamp(0.0, 1.0)).powf(0.25);
-        let fog = mix(fog, darkened, blend);
+        let fog = if sky_color.is_some() { mix(fog, darkened, blend) } else { fog };
         Self {
             sky,
             fog,
@@ -140,7 +146,8 @@ impl Atmosphere {
             stars,
             clear: 1.0 - rain,
             sky_end: (f32::from(distance) * 16.0).min(512.0),
-            dark: eye < HORIZON,
+            dark: day && eye < HORIZON,
+            skybox: env.skybox,
         }
     }
 
@@ -193,6 +200,29 @@ fn normalize(a: [f32; 3]) -> [f32; 3] {
     a.map(|v| v / l)
 }
 
+/// The End's sky: a cube of the dark nebula texture around the player, each face repeating it 16 times, drawn at
+/// 40/255 of its brightness.
+fn end_sky(d: [f32; 3], assets: &Assets) -> [f32; 3] {
+    const FACES: [fn([f32; 3]) -> [f32; 3]; 6] = [
+        |d| d,
+        |d| [d[0], d[2], -d[1]],
+        |d| [d[0], -d[2], d[1]],
+        |d| [d[0], -d[1], -d[2]],
+        |d| [d[1], -d[0], d[2]],
+        |d| [-d[1], d[0], d[2]],
+    ];
+    let Some(texture) = assets.end_sky.as_ref() else { return [0.0; 3] };
+    for face in FACES {
+        let p = face(d);
+        if p[1] < 0.0 && -p[1] >= p[0].abs() && -p[1] >= p[2].abs() {
+            let (u, v) = ((p[0] / -p[1] + 1.0) * 8.0, (p[2] / -p[1] + 1.0) * 8.0);
+            let px = texture.sample(u, v, 0);
+            return [0, 1, 2].map(|k| f32::from(px[k]) / 255.0 * (40.0 / 255.0));
+        }
+    }
+    [0.0; 3]
+}
+
 /// Paints the sky into every pixel of `target`, in the game's order: sky disc, sunrise glow, sun, moon, stars,
 /// dark disc.
 pub fn paint(target: &mut Target, view: &View, air: &Atmosphere, assets: &Assets) {
@@ -205,6 +235,21 @@ pub fn paint(target: &mut Target, view: &View, air: &Atmosphere, assets: &Assets
         for x in 0..w {
             let d = direction(target, x, y);
             target.color[y * w + x] = air.disc(d, 16.0, air.sky).unwrap_or(air.fog);
+        }
+    }
+    match air.skybox {
+        Skybox::Overworld => {}
+        Skybox::None => {
+            target.color.fill(air.fog);
+            return;
+        }
+        Skybox::End => {
+            for y in 0..h {
+                for x in 0..w {
+                    target.color[y * w + x] = end_sky(direction(target, x, y), assets);
+                }
+            }
+            return;
         }
     }
     let to_view = |p: [f32; 3]| view.to_view(p);
@@ -280,7 +325,7 @@ mod tests {
 
     #[test]
     fn fog_at_render_distance_two_matches_plains_noon() {
-        let air = Atmosphere::new(6000, 0.0, 0.0, &Biome::default(), 2, [0.0, 0.0, 1.0], 80.0);
+        let air = Atmosphere::new(6000, 0.0, 0.0, &Biome::default(), &Environment::default(), 2, [0.0, 0.0, 1.0], 80.0);
         let c = air.fog.map(|v| (v * 255.0).round() as i32);
         assert!((c[0] - 173).abs() <= 1 && (c[1] - 203).abs() <= 1 && c[2] == 255, "{c:?}");
     }
