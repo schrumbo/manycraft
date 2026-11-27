@@ -17,7 +17,7 @@ use crate::view::kit::button::{Button, Look};
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::text::{caption, figure, line, secondary, strong};
 use crate::view::kit::tooltip::WithTip;
-use crate::view::kit::zoom::{BUTTON_ZOOM, FIT, Pose, fit_scale, held, put, wheel_factor};
+use crate::view::kit::zoom::{BUTTON_ZOOM, FIT, Pose, adjust, fit_scale, held, put, wheel_factor};
 use crate::view::kit::{off_ui, ring, use_theme};
 use crate::view::store::use_store;
 use crate::view::theme::{Theme, font, iconsize, space};
@@ -386,7 +386,7 @@ impl Component for Lightbox {
                 pressed.set(if twice { None } else { Some(Instant::now()) });
                 if twice {
                     let at = (e.element_location().x as f32 - area.0 / 2., e.element_location().y as f32 - area.1 / 2.);
-                    put(pose, pose.peek().toggled(fit, area, size, at));
+                    adjust(pose, |p| p.toggled(fit, area, size, at));
                     return;
                 }
                 let current = *pose.peek();
