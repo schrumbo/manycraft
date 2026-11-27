@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use freya::prelude::*;
 
-use super::cursor::{Cursor, Live, use_cursor};
+use super::cursor::{Cursor, use_cursor};
 use super::detail::{self, Detail, Pane, Subject, use_pane};
 use super::{Facts, links, snapshots};
 use crate::core::content::Bisect;
@@ -16,7 +16,7 @@ use crate::view::kit::field::Field;
 use crate::view::kit::menu::{self, Menu};
 use crate::view::kit::select::Select;
 use crate::view::kit::text::{caption, heading, line, mono, secondary, spacer};
-use crate::view::kit::{Bounds, off_ui, page, use_theme};
+use crate::view::kit::{Bounds, Live, off_ui, page, use_theme};
 use crate::view::store::use_store;
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
 use list::{Data, Row, Sort};

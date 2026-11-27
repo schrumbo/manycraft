@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use freya::prelude::*;
 
-use super::cursor::{self, Cursor, Live, use_cursor};
+use super::cursor::{self, Cursor, use_cursor};
 use super::detail::{self, Detail, Pane, Subject, use_pane};
 use super::entry::{EntryRow, ROW, RowAction, bar};
 use super::shots_parts::centered;
@@ -26,7 +26,7 @@ use crate::view::kit::button::Button;
 use crate::view::kit::field::Field;
 use crate::view::kit::menu::{self, Item, Menu};
 use crate::view::kit::text::{caption, secondary};
-use crate::view::kit::{Bounds, off_ui, open_external, page, toast, use_theme};
+use crate::view::kit::{Bounds, Live, off_ui, open_external, page, toast, use_theme};
 use crate::view::native;
 use crate::view::sheets::browser;
 use crate::view::store::{Store, use_store};

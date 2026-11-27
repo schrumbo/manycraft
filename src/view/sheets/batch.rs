@@ -32,7 +32,7 @@ use crate::view::kit::spinner;
 use crate::view::kit::switch::Switch;
 use crate::view::kit::text::{caption, figure, line, para};
 use crate::view::kit::tooltip::WithTip;
-use crate::view::kit::{off_ui, ring, toast, use_arrows, use_theme};
+use crate::view::kit::{Live, off_ui, ring, toast, use_arrows, use_theme};
 use crate::view::sheets::instance::{Load, WIDE, problem_view};
 use crate::view::sheets::unattended;
 use crate::view::store::{Store, use_store};
@@ -194,8 +194,7 @@ fn restore(store: Store, batch: Batch) {
         let back = batch.clone();
         match off_ui(move || remote::restore_batch(&back)).await {
             Some(Ok(())) => {
-                let mut page = store.ui.page;
-                page.set(Page::Grid(Filter::Batch(batch.id.clone())));
+                store.ui.page.settle(Page::Grid(Filter::Batch(batch.id.clone())));
             }
             Some(Err(e)) => {
                 toast::show(store.ui, forms::explain_as(trf("„%@“ wurde nicht zurückgeholt.", &[&batch.name]), &e).text, None);

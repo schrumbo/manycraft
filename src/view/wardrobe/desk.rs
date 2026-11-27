@@ -18,7 +18,7 @@ use crate::core::i18n::tr;
 use crate::core::skin_change::{self as change, Model};
 use crate::core::wardrobe::{self, Outfit, Skin, Step, Told};
 use crate::core::skin;
-use crate::view::kit::{off_thread, toast};
+use crate::view::kit::{Live, off_thread, toast};
 use crate::view::store::Store;
 use crate::view::ui::Page;
 
@@ -367,8 +367,7 @@ impl Desk {
                 return;
             }
             let have: HashMap<String, Hung> = self.shared.shelf.peek().iter().map(|h| (h.skin.file.clone(), h.clone())).collect();
-            let mut shelf = self.shared.shelf;
-            shelf.set(
+            self.shared.shelf.settle(
                 found
                     .into_iter()
                     .filter_map(|(skin, loaded)| match loaded {

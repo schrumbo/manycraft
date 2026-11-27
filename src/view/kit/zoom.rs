@@ -211,6 +211,75 @@ mod tests {
         assert!(found.is_empty(), "{}", found.join("\n"));
     }
 
+    fn task_blocks(text: &str) -> Vec<(usize, &str)> {
+        let mut blocks = Vec::new();
+        for (at, _) in text.match_indices("spawn_in_window(") {
+            let Some(open) = text[at..].find('{').map(|i| at + i) else { continue };
+            let mut depth = 0;
+            let end = text[open..]
+                .char_indices()
+                .find(|(_, c)| {
+                    depth += i32::from(*c == '{') - i32::from(*c == '}');
+                    depth == 0
+                })
+                .map_or(text.len(), |(i, _)| open + i);
+            blocks.push((text[..open].lines().count(), &text[open..end]));
+        }
+        blocks
+    }
+
+    fn unguarded_after_await(text: &str) -> Vec<usize> {
+        const GUARDS: [&str; 7] = ["try_peek", "try_write", "try_read", ".alive()", ".soft(", ".got()", ".settle("];
+        let mut found = Vec::new();
+        for (first, block) in task_blocks(text) {
+            for opener in [".set(", ".write(", ".set_if_modified(", "put("] {
+                for (at, _) in block.match_indices(opener) {
+                    let Some(awaited) = block[..at].rfind(".await") else { continue };
+                    if GUARDS.iter().any(|g| block[awaited..at].contains(g)) {
+                        continue;
+                    }
+                    found.push(first + block[..at].lines().count() - 1);
+                }
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    #[test]
+    fn a_task_never_writes_a_state_after_an_await_without_checking_it_is_alive() {
+        let mut files = Vec::new();
+        view_sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/view"), &mut files);
+        let mut found = Vec::new();
+        for file in files {
+            if file.file_name().is_some_and(|n| n == "zoom.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).unwrap_or_default();
+            for line in unguarded_after_await(&text) {
+                found.push(format!("{}:{line} writes a state after an await without try_peek, try_write or Live", file.display()));
+            }
+        }
+        assert!(found.is_empty(), "{}", found.join("\n"));
+    }
+
+    #[test]
+    fn the_scan_sees_a_bare_write_after_an_await() {
+        let bare = "spawn_in_window(async move {\n    let r = work().await;\n    busy.set(false);\n});";
+        assert_eq!(unguarded_after_await(bare), vec![3]);
+        let guarded = "spawn_in_window(async move {\n    let r = work().await;\n    if busy.try_peek().is_some() {\n        busy.set(false);\n    }\n});";
+        assert!(unguarded_after_await(guarded).is_empty());
+        let stale = "spawn_in_window(async move {\n    if busy.try_peek().is_none() { return; }\n    work().await;\n    busy.write().clear();\n});";
+        assert_eq!(unguarded_after_await(stale), vec![4]);
+        let before = "spawn_in_window(async move {\n    busy.set(true);\n    work().await;\n});";
+        assert!(unguarded_after_await(before).is_empty());
+        let live = "spawn_in_window(async move {\n    work().await;\n    busy.soft(|b| *b = false);\n    page.settle(next);\n});";
+        assert!(unguarded_after_await(live).is_empty());
+        let loops = "spawn_in_window(async move {\n    loop {\n        after(T).await;\n        busy.write().tick();\n    }\n});";
+        assert_eq!(unguarded_after_await(loops), vec![4]);
+    }
+
     #[test]
     fn the_scan_sees_a_write_inside_a_borrow() {
         assert_eq!(writes_while_reading("put(pose, pose.peek().factor(1.))"), Some("pose".into()));
