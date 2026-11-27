@@ -202,7 +202,7 @@ impl Component for Card {
                     }
                 }
                 Key::Named(NamedKey::Enter) if e.modifiers.is_empty() && enter.is_some() => {
-                    if takes_enter(held.is_some(), *ui.palette.peek(), button_focused())
+                    if takes_enter(held.is_some(), *ui.palette.peek(), button_focused(), super::field::owns_enter())
                         && let Some(h) = &enter
                     {
                         e.stop_propagation();
@@ -212,7 +212,7 @@ impl Component for Card {
                 Key::Named(NamedKey::Enter) if e.modifiers.is_empty() => {
                     if let Some(p) = &keys
                         && p.disabled.is_none()
-                        && takes_enter(held.is_some(), *ui.palette.peek(), button_focused())
+                        && takes_enter(held.is_some(), *ui.palette.peek(), button_focused(), super::field::owns_enter())
                     {
                         e.stop_propagation();
                         p.run.call(());
@@ -234,10 +234,10 @@ impl Component for Card {
     }
 }
 
-/// Whether the sheet's default action answers Enter: not while work is locked, the palette is open, or a button has the
-/// focus, since that button answers Enter itself.
-fn takes_enter(locked: bool, palette: bool, button_focused: bool) -> bool {
-    !locked && !palette && !button_focused
+/// Whether the sheet's default action answers Enter: not while work is locked, the palette is open, or a button or a field
+/// that commits on Enter has the focus, since that control answers Enter itself.
+fn takes_enter(locked: bool, palette: bool, button_focused: bool, field_owns: bool) -> bool {
+    !locked && !palette && !button_focused && !field_owns
 }
 
 /// Draws the window's sheet over a scrim that fades in.
@@ -294,9 +294,10 @@ mod tests {
 
     #[test]
     fn enter_runs_the_default_action_only_when_nothing_else_answers_it() {
-        assert!(takes_enter(false, false, false));
-        assert!(!takes_enter(true, false, false));
-        assert!(!takes_enter(false, true, false));
-        assert!(!takes_enter(false, false, true));
+        assert!(takes_enter(false, false, false, false));
+        assert!(!takes_enter(true, false, false, false));
+        assert!(!takes_enter(false, true, false, false));
+        assert!(!takes_enter(false, false, true, false));
+        assert!(!takes_enter(false, false, false, true));
     }
 }

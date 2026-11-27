@@ -2518,7 +2518,7 @@ fn results(t: &Theme, flow: &Flow, facts: &Rc<Facts>, kind: Kind, typed: &str, c
         };
     };
     let list = ResultList { view: View { flow: flow.clone(), facts: facts.clone(), page, visible, sel, more, has_more, epoch } };
-    rect().width(Size::fill()).height(Size::fill()).padding(space::XXS).opacity(if dim { t.hidden_dim } else { 1. }).interactive(!dim).child(list).into_element()
+    rect().width(Size::fill()).height(Size::fill()).padding(t.shape.tile - t.shape.control).opacity(if dim { t.hidden_dim } else { 1. }).interactive(!dim).child(list).into_element()
 }
 
 fn empty(t: &Theme, flow: &Flow, facts: &Facts, typed: &str, categorised: bool, all: bool) -> Element {

@@ -11,12 +11,19 @@ use crate::view::theme::{Theme, control, font, iconsize, space};
 
 thread_local! {
     static FIELDS: std::cell::RefCell<std::collections::HashSet<AccessibilityId>> = std::cell::RefCell::default();
+    static OWNS_ENTER: std::cell::RefCell<std::collections::HashSet<AccessibilityId>> = std::cell::RefCell::default();
 }
 
 /// True while a text field has the keyboard, so app shortcuts leave its editing keys alone.
 pub fn typing() -> bool {
     let focused = *Platform::get().current_window().focused_accessibility_id.peek();
     FIELDS.with(|f| f.borrow().contains(&focused))
+}
+
+/// True while a field that commits on Enter has the keyboard, so a sheet's default action leaves Enter to it.
+pub fn owns_enter() -> bool {
+    let focused = *Platform::get().current_window().focused_accessibility_id.peek();
+    OWNS_ENTER.with(|f| f.borrow().contains(&focused))
 }
 
 /// A one-line text field bound to `value`.
@@ -38,6 +45,7 @@ pub struct Field {
     claim: Option<Callback<(Key, Modifiers), bool>>,
     rows_through: bool,
     a11y: Option<AccessibilityId>,
+    owns_enter: bool,
 }
 
 impl Field {
@@ -60,6 +68,7 @@ impl Field {
             claim: None,
             rows_through: false,
             a11y: None,
+            owns_enter: false,
         }
     }
 
@@ -135,6 +144,12 @@ impl Field {
         self
     }
 
+    /// Keeps Enter for `on_submit` while the field has the keyboard, so a sheet around it does not run its default action.
+    pub fn owns_enter(mut self) -> Self {
+        self.owns_enter = true;
+        self
+    }
+
     /// Uses `a11y` as the field's focus id, so its owner can focus it.
     pub fn a11y(mut self, a11y: AccessibilityId) -> Self {
         self.a11y = Some(a11y);
@@ -164,8 +179,11 @@ impl Component for Field {
         let t = use_theme();
         let a11y = use_hook(|| self.a11y.unwrap_or_else(AccessibilityId::new_unique));
         use_hook(|| FIELDS.with(|f| f.borrow_mut().insert(a11y)));
+        let owns = self.owns_enter;
+        use_hook(|| owns.then(|| OWNS_ENTER.with(|f| f.borrow_mut().insert(a11y))));
         use_drop(move || {
             FIELDS.with(|f| f.borrow_mut().remove(&a11y));
+            OWNS_ENTER.with(|f| f.borrow_mut().remove(&a11y));
         });
         let focus = use_focus(a11y);
         let spot = use_spot(&self.id, "field", self.label.as_deref().unwrap_or(&self.placeholder), self.disabled.is_none());

@@ -41,7 +41,7 @@ use super::commands::{Extra, Shortcut};
 use super::icons::{Icon, icon};
 use super::kit::button::Button;
 use super::kit::text::{heading, secondary};
-use super::kit::{after, page, use_theme};
+use super::kit::{after, use_theme};
 use super::store::{Store, use_store};
 use super::theme::{frame, iconsize, space};
 use super::ui::{Filter, Page};
@@ -70,11 +70,6 @@ impl Tab {
     /// The tabs of an instance in order; shader packs need a loader that takes mods.
     pub fn shown(takes_mods: bool) -> Vec<Tab> {
         [Tab::Mods, Tab::Packs, Tab::Shaders, Tab::Worlds, Tab::Shots, Tab::Logs, Tab::Settings].into_iter().filter(|t| takes_mods || *t != Tab::Shaders).collect()
-    }
-
-    /// Whether the tab is a form or prose that keeps a readable measure; the others use the whole width.
-    fn reads(self) -> bool {
-        self == Tab::Settings
     }
 
     /// The id the drive tool and spots use.
@@ -409,7 +404,7 @@ impl Component for InstancePage {
         };
         let room = ui.window.read().0 - ui.sidebar_room();
         let body = tab_body(&t, store, tab, f.clone());
-        let body = if tab.reads() { page::reading(body).height(Size::fill()) } else { rect().width(Size::fill()).height(Size::fill()).child(body) };
+        let body = rect().width(Size::fill()).height(Size::fill()).child(body);
         let content = rect().width(Size::fill()).height(Size::flex(1.)).main_align(Alignment::Start).child(body);
         let mut page = rect().width(Size::fill()).height(Size::fill()).child(Strip { id: self.id.clone() });
         for n in inspector::notices(&t, store, &self.id) {
