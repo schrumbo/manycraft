@@ -466,19 +466,19 @@ fn y_rot(facing: u8) -> f32 {
 fn frame(painter: &mut Painter, assets: &Assets, entities: &impl Entities, lightmap: &Lightmap, e: &Entity, light: [f32; 3], hidden: bool) {
     let Data::Frame { item, rotation, facing, glow, invisible } = &e.data else { return };
     let invisible = &(*invisible || hidden);
+    let picture = item.as_ref().filter(|i| plain(i.id) == "filled_map").and_then(|i| i.map).and_then(|id| entities.map(id));
     let rel = [0, 1, 2].map(|k| (e.pos[k] - painter.view.eye[k]) as f32);
     let d = step(*facing);
     let (x_rot, y_rot) = if *facing >= 2 { (0.0, 180.0 - y_rot(*facing)) } else { (-90.0 * d[1], 180.0) };
     let at = Affine::at(rel).translate(d.map(|v| v * 0.46875)).rotate_x(x_rot.to_radians()).rotate_y(y_rot.to_radians());
     if !invisible {
         let name = if *glow { "glow_item_frame" } else { "item_frame" };
-        let map = item.as_ref().is_some_and(|i| plain(i.id) == "filled_map");
-        let variant = super::model::Variant { model: format!("block/{name}{}", if map { "_map" } else { "" }), x: 0, y: 0, uvlock: false };
+        let variant = super::model::Variant { model: format!("block/{name}{}", if picture.is_some() { "_map" } else { "" }), x: 0, y: 0, uvlock: false };
         block_model(painter, assets, &variant, &at.translate([-0.5, -0.5, -0.5]), light);
     }
     let Some(item) = item else { return };
     let at = at.translate([0.0, 0.0, if *invisible { 0.5 } else { 0.4375 }]);
-    if let Some(picture) = item.map.filter(|_| plain(item.id) == "filled_map").and_then(|id| entities.map(id)) {
+    if let Some(picture) = picture {
         let at = at.rotate_z((f32::from(*rotation % 4) * 90.0).to_radians()).rotate_z(PI).scale([1.0 / 128.0; 3]).translate([-64.0, -64.0, -1.0]);
         let corners = [[0.0, 128.0, -0.01], [128.0, 128.0, -0.01], [128.0, 0.0, -0.01], [0.0, 0.0, -0.01]];
         let light = if *glow { lightmap.color(light::pack(15, 13)) } else { light };

@@ -2,6 +2,7 @@
 //! data, kept compact per entity and turned into the renderer's entities only when a picture is taken.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Result, bail, ensure};
 use base64::Engine;
@@ -11,7 +12,8 @@ use uuid::Uuid;
 use crate::core::chat_text::Run;
 
 use super::item::{self, Stack};
-use super::render::{self, Data, Display, DisplayKind, Entity, Hand, Item, Pose, Skin, Text};
+use super::maps::Maps;
+use super::render::{self, Data, Display, DisplayKind, Entity, Hand, MapPicture, Item, Pose, Skin, Text};
 use super::text::{self, Line};
 use super::v777::entity_data as d;
 use super::v777::{ENTITY_TYPES, ITEMS, LIVING_ENTITY_TYPES, PARTICLE_TYPES, VILLAGER_PROFESSIONS, VILLAGER_TYPES, serializer as s};
@@ -339,11 +341,25 @@ impl Crowd {
 
     /// The entities within `range` blocks of `eye` as the renderer takes them, with name tags as `tag` turns a team
     /// member's name into what shows (the flag: whether its kind obeys team name tag visibility), and the hand of the account `me` holding `held`.
-    pub fn seen(&self, eye: [f64; 3], range: f64, me: Uuid, held: Option<&Stack>, left_handed: bool, tag: impl Fn(&str, Text, bool) -> Option<Text>) -> Seen {
+    pub fn seen(&self, eye: [f64; 3], range: f64, me: Uuid, held: Option<&Stack>, left_handed: bool, maps: &Maps, tag: impl Fn(&str, Text, bool) -> Option<Text>) -> Seen {
         let near = |p: &[f64; 3]| (p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2) <= range * range;
-        let entities = self.near.iter().filter(|(_, m)| near(&m.pos)).map(|(id, m)| self.entity(*id, m, &tag)).collect();
+        let entities: Vec<Entity> = self.near.iter().filter(|(_, m)| near(&m.pos)).map(|(id, m)| self.entity(*id, m, &tag)).collect();
         let hand = Hand { main: held.and_then(picture_item), left_handed, skin: self.skin(me) };
-        Seen { entities, hand }
+        let mut pictures: HashMap<i32, MapPicture> = HashMap::new();
+        for id in entities.iter().filter_map(|e: &Entity| if let Data::Frame { item: Some(Item { map: Some(id), .. }), .. } = &e.data { Some(*id) } else { None }) {
+            if let Some(colors) = maps.get(id) {
+                pictures.insert(id, MapPicture { colors: Arc::clone(colors) });
+            }
+        }
+        Seen { entities, hand, maps: pictures }
+    }
+
+    /// The ids of the maps in the item frames the crowd keeps.
+    pub fn framed(&self) -> impl Iterator<Item = i32> + '_ {
+        self.near.values().filter_map(|m| match m.data.as_deref() {
+            Some(Data::Frame { item: Some(Item { map: Some(id), .. }), .. }) => Some(*id),
+            _ => None,
+        })
     }
 
     fn skin(&self, uuid: Uuid) -> Skin {
@@ -392,6 +408,7 @@ impl Crowd {
 pub struct Seen {
     pub entities: Vec<Entity>,
     pub hand: Hand,
+    maps: HashMap<i32, MapPicture>,
 }
 
 impl render::Entities for Seen {
@@ -401,6 +418,10 @@ impl render::Entities for Seen {
 
     fn hand(&self) -> Option<&Hand> {
         Some(&self.hand)
+    }
+
+    fn map(&self, id: i32) -> Option<&MapPicture> {
+        self.maps.get(&id)
     }
 }
 
@@ -701,7 +722,7 @@ impl Worn {
 
 fn picture_item(stack: &Stack) -> Option<Item> {
     let &(id, ..) = usize::try_from(stack.item).ok().and_then(|i| ITEMS.get(i))?;
-    Some(Item { id, count: stack.count.clamp(1, 255) as u8, glint: stack.glint, dye: stack.dye, trim: None, profile: None, map: None })
+    Some(Item { id, count: stack.count.clamp(1, 255) as u8, glint: stack.glint, dye: stack.dye, trim: None, profile: None, map: stack.map })
 }
 
 fn textures(value: &str) -> Option<(Option<[u8; 32]>, bool)> {
@@ -746,7 +767,7 @@ mod tests {
     }
 
     fn seen(c: &Crowd) -> Vec<Entity> {
-        let mut all = c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, |_, name, _| Some(name)).entities;
+        let mut all = c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, &Maps::default(), |_, name, _| Some(name)).entities;
         all.sort_by_key(|e| e.id);
         all
     }
@@ -787,6 +808,44 @@ mod tests {
         o.varint(1).varint(7);
         c.remove(&mut In::new(&o.0)).unwrap();
         assert!(seen(&c).is_empty());
+    }
+
+    #[test]
+    fn a_framed_map_is_read_from_its_map_id_component_and_gets_the_pictures_the_server_sent() {
+        use super::super::v777::component;
+        let mut c = Crowd::default();
+        add(&mut c, 1, "item_frame", [0.0; 3]);
+        add(&mut c, 2, "glow_item_frame", [1.0, 0.0, 0.0]);
+        add(&mut c, 3, "item_frame", [2.0, 0.0, 0.0]);
+        for (frame, map) in [(1, 7), (2, 9)] {
+            data(&mut c, frame, |o| {
+                o.u8(d::item_frame::DATA_ITEM).varint(s::ITEM_STACK).varint(1).varint(item("filled_map")).varint(1).varint(0).varint(component::MAP_ID).varint(map);
+                o.u8(0xFF);
+            })
+            .unwrap();
+        }
+        data(&mut c, 3, |o| {
+            o.u8(d::item_frame::DATA_ITEM).varint(s::ITEM_STACK).varint(1).varint(item("filled_map")).varint(0).varint(0);
+            o.u8(0xFF);
+        })
+        .unwrap();
+        let mut maps = Maps::default();
+        let mut o = Out::default();
+        o.varint(7).u8(0).bool(false).bool(false).u8(2).u8(1).u8(4).u8(5).varint(2).raw(&[50, 51]);
+        maps.read(&mut In::new(&o.0), |id| c.framed().any(|m| m == id)).unwrap();
+        let framed: Vec<i32> = c.framed().collect();
+        assert_eq!(framed.len(), 2);
+        assert!(framed.contains(&7) && framed.contains(&9));
+        let shown = c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, &maps, |_, name, _| Some(name));
+        let mut frames: Vec<_> = shown.entities.iter().map(|e| match &e.data {
+            Data::Frame { item: Some(i), .. } => (e.id, i.id, i.map),
+            other => panic!("{other:?}"),
+        }).collect();
+        frames.sort();
+        assert_eq!(frames, [(1, "filled_map", Some(7)), (2, "filled_map", Some(9)), (3, "filled_map", None)]);
+        let picture = render::Entities::map(&shown, 7).expect("the map the server sent");
+        assert_eq!(picture.colors[5 * 128 + 4..5 * 128 + 6], [50, 51]);
+        assert!(render::Entities::map(&shown, 9).is_none(), "a map the server never sent has no picture");
     }
 
     #[test]
@@ -834,9 +893,9 @@ mod tests {
         let Data::Player { skin, main_left } = &e.data else { panic!() };
         assert_eq!((skin.url.as_deref(), skin.slim, skin.parts, *main_left), (Some(format!("{SKINS}{hash}").as_str()), true, 0x7E, false));
         assert_eq!(e.name.as_ref().unwrap()[0].text, "Alex");
-        let keyed = c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, |member, _, hideable| hideable.then(|| vec![Run { text: member.into(), ..Run::default() }])).entities;
+        let keyed = c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, &Maps::default(), |member, _, hideable| hideable.then(|| vec![Run { text: member.into(), ..Run::default() }])).entities;
         assert_eq!(keyed[0].name.as_ref().unwrap()[0].text, "Alex");
-        assert!(c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, |_, _, _| None).entities[0].name.is_none());
+        assert!(c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, &Maps::default(), |_, _, _| None).entities[0].name.is_none());
         assert_eq!(e.equipment[render::slot::MAIN_HAND].as_ref().unwrap().id, "iron_sword");
         assert_eq!(e.equipment[render::slot::HEAD].as_ref().unwrap().id, "diamond_helmet");
     }

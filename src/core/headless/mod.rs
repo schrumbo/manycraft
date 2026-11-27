@@ -15,6 +15,7 @@ mod conn;
 mod crowd;
 mod crypto;
 mod item;
+mod maps;
 mod picture;
 pub mod render;
 pub mod resume;
@@ -37,7 +38,7 @@ use super::ipc;
 use super::proxy::Proxy;
 
 pub use cli::cli;
-pub use screen::{SIDE as MAP_SIDE, rgba as map_rgba};
+pub use maps::{SIDE as MAP_SIDE, rgba as map_rgba};
 
 const STACK: usize = 512 << 10;
 
