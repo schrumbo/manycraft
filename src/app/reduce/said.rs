@@ -81,6 +81,17 @@ pub(super) fn say(m: &mut Model, keys: &[String], text: String, out: &mut Vec<Ef
 /// The account `key` reports what became of line `id`. A line it could not write because it was not on a server goes
 /// back to waiting.
 pub(super) fn outcome(m: &mut Model, key: &str, id: u64, outcome: ChatOutcome, out: &mut Vec<Effect>) {
+    if let Some(queue) = m.session.outbox.held.get_mut(key)
+        && let Some(at) = queue.iter().position(|l| l.id == id)
+    {
+        if matches!(outcome, ChatOutcome::Refused(ChatRefusal::NotInGame | ChatRefusal::Dropped)) {
+            return;
+        }
+        queue.remove(at);
+        if queue.is_empty() {
+            m.session.outbox.held.remove(key);
+        }
+    }
     let handed = m.session.outbox.handed.get_mut(key).and_then(|v| v.iter().position(|l| l.id == id).map(|at| v.remove(at)));
     if m.session.outbox.handed.get(key).is_some_and(Vec::is_empty) {
         m.session.outbox.handed.remove(key);
@@ -258,6 +269,32 @@ mod tests {
         assert_eq!(m.said.as_ref().unwrap().held(), 1);
         let fx = report(&mut m, &s, join(&a));
         assert_eq!(chat_lines(&fx, &a), vec![(id, "hi".to_owned())]);
+    }
+
+    fn dropped_game() -> (Model, String, u64) {
+        let (mut m, _) = setup(Phase::Stopped, AccountKind::Offline, &[]);
+        let a = game(&mut m, "a", playing());
+        say(&mut m, &[a.clone()], "hi".into(), &mut Vec::new());
+        let id = id_of(&m, &a);
+        report(&mut m, &settings(), state(&a, StateKind::Disconnected, Some("mc.example"), Some(crate::core::ipc::DisconnectCause::ServerDown)));
+        (m, a, id)
+    }
+
+    #[test]
+    fn a_late_refusal_of_a_line_that_already_waits_changes_nothing() {
+        let (mut m, a, id) = dropped_game();
+        outcome(&mut m, &a, id, ChatOutcome::Refused(ChatRefusal::Dropped), &mut Vec::new());
+        assert_eq!((m.said.as_ref().unwrap().held(), m.said.as_ref().unwrap().missed().count()), (1, 0));
+        assert_eq!(m.session.outbox.held[&a].len(), 1);
+    }
+
+    #[test]
+    fn a_late_sent_report_takes_the_line_out_of_the_queue() {
+        let (mut m, a, id) = dropped_game();
+        outcome(&mut m, &a, id, ChatOutcome::Sent, &mut Vec::new());
+        assert!(!m.session.outbox.has(&a));
+        assert_eq!(m.said.as_ref().unwrap().counts(), (1, 0, 0, 0));
+        assert!(chat_lines(&report(&mut m, &settings(), join(&a)), &a).is_empty(), "a written line is not sent again");
     }
 
     #[test]
