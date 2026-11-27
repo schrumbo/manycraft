@@ -509,10 +509,8 @@ fn region(sky: &[Light], block: &[Light]) -> Vec<u8> {
     };
     let mut out = Out::default();
     for mask in [bits(sky, false), bits(block, false), bits(sky, true), bits(block, true)] {
-        out.varint(mask.len() as i32);
-        for word in mask {
-            out.i64(word as i64);
-        }
+        let bytes: Vec<u8> = mask.iter().flat_map(|word| word.to_le_bytes()).collect();
+        out.bytes(&bytes);
     }
     for kept in [sky, block] {
         let levels: Vec<&[u8; LIGHT]> = kept.iter().filter_map(|l| if let Light::Levels(l) = l { Some(&**l) } else { None }).collect();
@@ -525,7 +523,12 @@ fn region(sky: &[Light], block: &[Light]) -> Vec<u8> {
 }
 
 fn mask(r: &mut In) -> Result<Vec<u64>> {
-    (0..r.list()?).map(|_| r.i64().map(|v| v as u64)).collect()
+    let bytes = r.bytes()?;
+    let mut words = vec![0u64; bytes.len().div_ceil(8)];
+    for (i, byte) in bytes.iter().enumerate() {
+        words[i / 8] |= u64::from(*byte) << (i % 8 * 8);
+    }
+    Ok(words)
 }
 
 fn bit(mask: &[u64], i: usize) -> bool {
@@ -868,7 +871,7 @@ mod tests {
         sky[0] = 0x5F;
         let mut packet = Out::default();
         packet.i32(0).i32(0).varint(0).bytes(&data.0).varint(0);
-        packet.varint(1).i64(2).varint(0).varint(0).varint(1).i64(2);
+        packet.varint(1).u8(2).varint(0).varint(0).varint(1).u8(2);
         packet.varint(1).bytes(&sky).varint(0);
         let mut w = World::default();
         w.dimension = Dimension { floor: 0, height: 16 };
@@ -893,7 +896,7 @@ mod tests {
         }
         let mut packet = Out::default();
         packet.i32(0).i32(0).varint(0).bytes(&air.0).varint(0);
-        packet.varint(1).i64(2).varint(0).varint(0).varint(0);
+        packet.varint(1).u8(2).varint(0).varint(0).varint(0);
         packet.varint(1).bytes(&sky).varint(0);
         let mut w = World::default();
         w.dimension = Dimension { floor: 0, height: 32 };
@@ -901,7 +904,7 @@ mod tests {
         let mut torch = vec![0u8; 2048];
         torch[1] = 0xE0;
         let mut update = Out::default();
-        update.varint(0).varint(0).varint(1).i64(4).varint(1).i64(2).varint(0).varint(0);
+        update.varint(0).varint(0).varint(1).u8(4).varint(1).u8(2).varint(0).varint(0);
         update.varint(1).bytes(&sky).varint(1).bytes(&torch);
         w.light(&mut In::new(&update.0)).unwrap();
         update.0[0] = 1;
@@ -917,6 +920,61 @@ mod tests {
         let kept = cells(&w.snapshot(0.0, 0.0, 0).chunks[0].1, w.dimension).unwrap();
         let (s, b): (Vec<Light>, Vec<Light>) = kept.into_iter().map(|c| (c.sky, c.block)).unzip();
         assert_eq!(levels(&s, &b), (Some(15), Some(15), Some(14), None), "folded light reads as before");
+    }
+
+    fn nbt_int(out: &mut Vec<u8>, key: &str, value: i32) {
+        out.push(3);
+        out.extend((key.len() as u16).to_be_bytes());
+        out.extend(key.as_bytes());
+        out.extend(value.to_be_bytes());
+    }
+
+    fn registry(types: &[(&str, i32, i32)]) -> Vec<u8> {
+        let mut reg = Out::default();
+        reg.varint(types.len() as i32);
+        for (name, floor, height) in types {
+            reg.string(name).bool(true);
+            let mut nbt = vec![10];
+            nbt_int(&mut nbt, "min_y", *floor);
+            nbt_int(&mut nbt, "height", *height);
+            nbt.push(0);
+            reg.raw(&nbt);
+        }
+        reg.0
+    }
+
+    fn light_update(x: i32, z: i32, sky_bits: &[u8], block_bits: &[u8], sky: usize, block: usize) -> Vec<u8> {
+        let mut out = Out::default();
+        out.varint(x).varint(z).bytes(sky_bits).bytes(block_bits).bytes(&[]).bytes(&[]);
+        out.varint(sky as i32);
+        for _ in 0..sky {
+            out.bytes(&[0xFF; 2048]);
+        }
+        out.varint(block as i32);
+        for _ in 0..block {
+            out.bytes(&[0x11; 2048]);
+        }
+        out.0
+    }
+
+    #[test]
+    fn light_of_the_nether_after_the_overworld_reads_in_the_nethers_height() {
+        let mut w = World::default();
+        let types = registry(&[("minecraft:overworld", -64, 384), ("minecraft:overworld_caves", -64, 384), ("minecraft:the_end", 0, 256), ("minecraft:the_nether", 0, 256)]);
+        w.dimension_types(&mut In::new(&types)).unwrap();
+        w.enter(0);
+        w.chunk(&mut In::new(&chunk(0, 0, &[0; 24])), (0, 0)).unwrap();
+        w.enter(3);
+        assert_eq!(w.dimension, Dimension { floor: 0, height: 256 });
+        w.chunk(&mut In::new(&chunk(-3, -1, &[0; 16])), (0, 0)).unwrap();
+        w.light(&mut In::new(&light_update(-3, -1, &[], &[0x18], 0, 2))).unwrap();
+        let relit = &w.snapshot(-40.0, -10.0, 0).relit;
+        assert_eq!(relit.len(), 1);
+        assert_eq!(relit[0].1.block.keys().copied().collect::<Vec<_>>(), [3, 4]);
+        let mut all = light_update(-3, -1, &[], &[0xFF, 0xFF, 0x03], 0, 18);
+        w.light(&mut In::new(&all)).unwrap();
+        all.truncate(0);
+        assert_eq!(w.snapshot(-40.0, -10.0, 0).relit[0].1.block.len(), 18);
     }
 
     #[test]

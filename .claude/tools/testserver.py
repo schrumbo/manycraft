@@ -84,6 +84,7 @@ def write_config(folder, port):
         "generate-structures": "false",
         "spawn-monsters": "false",
         "white-list": "false",
+        "allow-flight": "true",
     }
     if os.environ.get("MANYCRAFT_TESTSERVER_CONDUCT"):
         props["enable-code-of-conduct"] = "true"
