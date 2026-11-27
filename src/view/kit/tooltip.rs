@@ -26,7 +26,8 @@ pub struct Tip {
     pub anchor: Bounds,
 }
 
-/// Wraps `child` so that resting the pointer on it shows `tip`.
+/// Wraps `child` so that resting the pointer on it shows `tip`. Listens to over and out, not enter and leave: those go
+/// only to the topmost listener, which a child with a hover state of its own would always be.
 #[derive(PartialEq)]
 pub struct WithTip {
     pub tip: Option<String>,
@@ -74,7 +75,7 @@ impl Component for WithTip {
         rect()
             .width(if self.fill { Size::fill() } else { Size::auto() })
             .on_sized(move |e: Event<SizedEventData>| bounds.set_if_modified(Bounds::of(&e)))
-            .on_pointer_enter(move |_| {
+            .on_pointer_over(move |_| {
                 hovered.set(true);
                 let Some(text) = enter_tip.clone() else { return };
                 let mut ui = ui;
@@ -91,7 +92,7 @@ impl Component for WithTip {
                     }
                 });
             })
-            .on_pointer_leave(move |_| {
+            .on_pointer_out(move |_| {
                 hovered.set(false);
                 leave_shown.set(false);
                 let mut ui = ui;
