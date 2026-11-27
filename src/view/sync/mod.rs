@@ -6,14 +6,17 @@ mod setup;
 use freya::prelude::*;
 
 use self::setup::SetupPanel;
-use crate::core::i18n::tr;
-use crate::core::share::{self, KINDS, Kind, State as Shared};
+use crate::core::i18n::{tr, trf};
+use crate::core::share::{self, Copies, KINDS, Kind, State as Shared};
 use crate::ui::forms;
+use crate::ui::instance_files::bytes;
 use crate::view::kit::group::{Line, group};
+use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::switch::Switch;
 use crate::view::kit::{off_ui, page, toast, use_theme};
 use crate::view::library;
 use crate::view::store::{Store, use_store};
+use crate::view::theme::frame;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct Who {
@@ -117,23 +120,7 @@ impl Component for SyncPage {
                 return;
             }
             busy.set(true);
-            let running = running.clone();
-            spawn_in_window(async move {
-                let done = off_ui(move || match kind {
-                    Some(kind) => share::set_kind(kind, on, &running),
-                    None => share::turn_off(&running),
-                })
-                .await;
-                match done {
-                    Some(Ok(())) => {}
-                    Some(Err(e)) => ctx.failed(tr("Nicht umgestellt."), &e),
-                    None => ctx.unexplained(),
-                }
-                if busy.try_peek().is_some() {
-                    busy.set(false);
-                }
-                ctx.refresh();
-            });
+            if on { apply(ctx, busy, running.clone(), kind, on) } else { ask(ctx, busy, running.clone(), kind) }
         };
         let working = *busy.read();
         let master_hint = if working { tr("Wird umgestellt …") } else { tr("Alle Instanzen nutzen, was unten eingeschaltet ist. Eine einzelne Instanz kann in ihren Einstellungen aussteigen.") };
@@ -152,6 +139,75 @@ impl Component for SyncPage {
             .collect();
         page::scrolling(scroll, col.child(group(&t, Some(tr("Was synchronisiert wird")), rows, Some(tr("Ausgeschaltet bekommt jede Instanz wieder eine eigene Kopie des gemeinsamen Stands.")))))
     }
+}
+
+fn apply(ctx: Ctx, mut busy: State<bool>, running: Vec<String>, kind: Option<Kind>, on: bool) {
+    busy.set(true);
+    spawn_in_window(async move {
+        let done = off_ui(move || match kind {
+            Some(kind) => share::set_kind(kind, on, &running),
+            None => share::turn_off(&running),
+        })
+        .await;
+        match done {
+            Some(Ok(())) => {}
+            Some(Err(e)) => ctx.failed(tr("Nicht umgestellt."), &e),
+            None => ctx.unexplained(),
+        }
+        if busy.try_peek().is_some() {
+            busy.set(false);
+        }
+        ctx.refresh();
+    });
+}
+
+/// Switching off gives each instance its own copy: more than one asks first, with Abbrechen as the default.
+fn ask(ctx: Ctx, mut busy: State<bool>, running: Vec<String>, kind: Option<Kind>) {
+    spawn_in_window(async move {
+        let cost = off_ui(move || share::copies_if_off(kind)).await;
+        match cost {
+            Some(cost) if cost.count > 1 => {
+                if busy.try_peek().is_some() {
+                    busy.set(false);
+                }
+                confirm(ctx, busy, running, kind, cost);
+            }
+            Some(_) => apply(ctx, busy, running, kind, false),
+            None => {
+                ctx.unexplained();
+                if busy.try_peek().is_some() {
+                    busy.set(false);
+                }
+            }
+        }
+    });
+}
+
+fn cost_text(cost: Copies) -> String {
+    match cost.bytes {
+        Some(size) if size > 0 => trf("Es entstehen %1$lld eigene Kopien, zusammen etwa %2$@.", &[&cost.count, &bytes(size)]),
+        _ => tr("Es entstehen mehrere Kopien."),
+    }
+}
+
+fn confirm(ctx: Ctx, busy: State<bool>, running: Vec<String>, kind: Option<Kind>, cost: Copies) {
+    let ui = ctx.store.ui;
+    let heading = kind.map_or_else(|| tr("Sync ausschalten?"), |kind| trf("%@ ausschalten?", &[&label(kind)]));
+    let keep = Primary { label: tr("Abbrechen"), disabled: None, danger: false, busy: false, run: EventHandler::new(move |_| sheet::close(ui)) };
+    let go = Primary {
+        label: tr("Ausschalten"),
+        disabled: None,
+        danger: false,
+        busy: false,
+        run: EventHandler::new(move |_| {
+            sheet::close(ui);
+            if !*busy.peek() {
+                apply(ctx, busy, running.clone(), kind, false);
+            }
+        }),
+    };
+    let card = Card::new("sync.confirm", heading).message(cost_text(cost)).primary(keep).primary_id("sync.confirm.cancel").secondary(go).secondary_id("sync.confirm.go").width(frame::SHEET_NARROW);
+    sheet::open(ui, card);
 }
 
 fn kind_key(kind: Kind) -> &'static str {

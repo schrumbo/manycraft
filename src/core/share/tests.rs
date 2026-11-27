@@ -418,3 +418,87 @@ fn a_world_in_use_does_not_block_giving_instances_their_own_copy() {
     assert_eq!(read(b.dir.join("games").join(ACCOUNT).join("saves").join("World One").join("level.dat")), "w1");
     assert!(!b.dir.join("games").join(ACCOUNT).join("saves").join("World One").join("session.lock").exists());
 }
+
+fn waits_for_the_hold(w: &World, own: &Own, work: impl FnOnce() + Send + 'static, done: impl FnOnce()) {
+    let held = w.mother.hold(&own.dir).unwrap();
+    let worker = std::thread::spawn(work);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!worker.is_finished(), "the work must wait while the instance is held");
+    done();
+    drop(held);
+    worker.join().unwrap();
+}
+
+#[test]
+fn a_start_waits_for_a_transition_of_its_instance() {
+    let w = world();
+    let (a, b) = (w.instance("A"), w.instance("B"));
+    w.put(w.game(&a, "saves").join("W").join("level.dat"), "w");
+    w.on(&a);
+    let (mother, own) = (w.mother.clone(), b.clone());
+    let game = b.dir.join("games").join(ACCOUNT);
+    fs::create_dir_all(&game).unwrap();
+    let at = game.join("saves");
+    waits_for_the_hold(&w, &b, move || {
+        inbound_in(&mother, &own, false).unwrap();
+        settle_game_in(&mother, &own.dir, &game).unwrap();
+    }, || assert!(fs::symlink_metadata(&at).is_err(), "nothing half-linked while held"));
+    assert!(linked_to(&b.dir.join("games").join(ACCOUNT).join("saves"), &w.shared("saves")));
+}
+
+#[test]
+fn a_transition_waits_for_a_start_of_its_instance() {
+    let w = world();
+    let (a, b) = (w.instance("A"), w.instance("B"));
+    w.put(w.game(&a, "saves").join("W").join("level.dat"), "w");
+    w.on(&a);
+    w.start(&b);
+    let (mother, root) = (w.mother.clone(), w.root.clone());
+    let saves = b.dir.join("games").join(ACCOUNT).join("saves");
+    waits_for_the_hold(&w, &b, move || set_kind_in(&mother, &root, Kind::Saves, false, &[]).unwrap(), || assert!(is_link(&saves), "still linked while held"));
+    assert!(!is_link(&saves));
+    assert_eq!(read(saves.join("W").join("level.dat")), "w");
+}
+
+#[test]
+fn worlds_of_a_seed_join_the_shared_ones_but_never_replace_one() {
+    let w = world();
+    let seed = w._tmp.path().join("seed");
+    let shared = w._tmp.path().join("shared");
+    w.put(seed.join("New").join("level.dat"), "new");
+    w.put(seed.join("Dup").join("level.dat"), "seed");
+    w.put(shared.join("Dup").join("level.dat"), "shared");
+    adopt_seed(&seed, &shared).unwrap();
+    assert_eq!(read(shared.join("New").join("level.dat")), "new");
+    assert_eq!(read(shared.join("Dup").join("level.dat")), "shared");
+    assert_eq!(read(seed.join("Dup").join("level.dat")), "seed");
+    assert!(!seed.join("New").exists());
+}
+
+#[test]
+fn switching_off_counts_the_copies_and_their_size() {
+    let w = world();
+    let (a, b, c) = (w.instance("A"), w.instance("B"), w.instance("C"));
+    w.put(w.game(&a, "saves").join("W").join("level.dat"), "12345");
+    w.on(&a);
+    w.start(&b);
+    w.start(&c);
+    let saves = copies_in(&w.mother, &w.root, Some(Kind::Saves));
+    assert_eq!((saves.count, saves.bytes), (3, Some(15)));
+    let config = copies_in(&w.mother, &w.root, Some(Kind::Config));
+    assert_eq!(config.count, 3);
+    let all = copies_in(&w.mother, &w.root, None);
+    assert_eq!(all.count, 3 + 3 + 3);
+    assert_eq!(copies_in(&w.mother, &w.root, Some(Kind::Options)).count, 0, "one file is no copy worth asking about");
+    set_kind_in(&w.mother, &w.root, Kind::Saves, false, &[]).unwrap();
+    assert_eq!(copies_in(&w.mother, &w.root, Some(Kind::Saves)).count, 0);
+}
+
+#[test]
+fn a_size_that_takes_too_long_to_count_stays_unknown() {
+    let w = world();
+    w.put(w._tmp.path().join("big").join("a.bin"), "1234");
+    let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    assert_eq!(folders::size_within(&w._tmp.path().join("big"), past), None);
+    assert_eq!(folders::size_within(&w._tmp.path().join("big"), std::time::Instant::now() + std::time::Duration::from_secs(5)), Some(4));
+}

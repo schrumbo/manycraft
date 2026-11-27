@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,8 @@ pub const DIR: &str = "sync";
 const LOCK: &str = ".lock";
 const CONFIG: &str = "config";
 const LOCK_WAIT: Duration = Duration::from_secs(30);
+const HOLD_WAIT: Duration = Duration::from_secs(300);
+const SIZE_BUDGET: Duration = Duration::from_millis(600);
 
 /// The sync folder.
 #[derive(Clone, Debug)]
@@ -58,6 +60,13 @@ impl Mother {
     fn lock(&self) -> Result<lock::Guard> {
         fs::create_dir_all(&self.root).with_context(|| format!("cannot create {}", self.root.display()))?;
         lock::exclusive_within(&self.root.join(LOCK), LOCK_WAIT)
+    }
+
+    /// Held while the folders of the instance in `dir` switch between linked and own, and while a game of it readies
+    /// them, so neither sees the other half done.
+    pub(crate) fn hold(&self, dir: &Path) -> Result<lock::Guard> {
+        let name = dir.file_name().context("instance folder has no name")?;
+        lock::exclusive_within(&self.root.join(".holds").join(name), HOLD_WAIT).with_context(|| tr("Sync stellt gerade Ordner dieser Instanz um. Versuch es gleich noch einmal."))
     }
 }
 
@@ -150,6 +159,7 @@ pub fn settle_game(instance: &Instance, game: &Path) -> Result<()> {
 }
 
 pub(crate) fn settle_game_in(mother: &Mother, dir: &Path, game: &Path) -> Result<()> {
+    let _held = mother.hold(dir)?;
     let flags = flags_in(mother, dir);
     for kind in [Kind::Saves, Kind::Screenshots] {
         folders::settle(&game.join(kind.rel()), &mother.path(kind.rel()), flags.get(kind))?;
@@ -160,6 +170,7 @@ pub(crate) fn settle_game_in(mother: &Mother, dir: &Path, game: &Path) -> Result
 /// Brings the instance `own` from what it took part in (`old`) to what it takes part in now (`new`). Options change
 /// at once; folders only when `idle`, else at the next start.
 fn settle_instance(mother: &Mother, own: &Own, old: Flags, new: Flags, idle: bool) -> Result<()> {
+    let _held = mother.hold(&own.dir)?;
     super::sync::with_templates(|| {
         if old.options && !new.options {
             leave_options(mother, own)?;
@@ -293,6 +304,51 @@ fn seed(mother: &Mother, own: &Own, game_version: &str, kinds: &[Kind]) -> Resul
         }
     }
     Ok(())
+}
+
+/// Moves the worlds of a batch's `seed` folder into the shared `saves` folder `shared`, except those it has by that name,
+/// which stay in `seed`.
+pub fn adopt_seed(seed: &Path, shared: &Path) -> Result<()> {
+    folders::move_children(seed, shared)
+}
+
+/// What switching sharing off costs: how many own copies appear and, when it could be counted quickly, their size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Copies {
+    pub count: usize,
+    pub bytes: Option<u64>,
+}
+
+/// The copies switching off `kind` (every kind that is on for `None`) gives the instances. The options file is no copy
+/// worth counting.
+pub fn copies_if_off(kind: Option<Kind>) -> Copies {
+    copies_in(&Mother::current(), &instance::instances_dir(), kind)
+}
+
+pub(crate) fn copies_in(mother: &Mother, root: &Path, kind: Option<Kind>) -> Copies {
+    let state = state::read(mother);
+    let kinds: Vec<Kind> = KINDS.into_iter().filter(|k| kind.is_none_or(|only| only == *k) && *k != Kind::Options && state.on && state.get(*k)).collect();
+    let dirs: Vec<PathBuf> = instance::load_all_in(root).unwrap_or_default().into_iter().map(|i| instance::dir_in(root, &i.id)).collect();
+    let until = Instant::now() + SIZE_BUDGET;
+    let mut out = Copies { count: 0, bytes: Some(0) };
+    for kind in kinds {
+        let shared = mother.path(kind.rel());
+        let linked = |path: PathBuf| is_link(&path) && folders::points_at(&path, &shared);
+        let n: usize = dirs
+            .iter()
+            .filter(|d| flags_in(mother, d).get(kind))
+            .map(|d| match kind {
+                Kind::Saves | Kind::Screenshots => game_dirs(d).into_iter().filter(|g| linked(g.join(kind.rel()))).count(),
+                _ => usize::from(linked(d.join(kind.rel()))),
+            })
+            .sum();
+        if n == 0 {
+            continue;
+        }
+        out.count += n;
+        out.bytes = out.bytes.zip(folders::size_within(&shared, until)).map(|(sum, one)| sum + one * n as u64);
+    }
+    out
 }
 
 /// Every instance with what it takes part in now, to compare after a change.
