@@ -2,6 +2,8 @@
 //! belongs to the page: all batches offer everyone and every running game grouped by batch, one batch offers itself and its
 //! own running games.
 
+use std::collections::BTreeSet;
+
 use uuid::Uuid;
 
 use crate::app::model::{Game, Model, Phase};
@@ -14,6 +16,8 @@ pub enum Target {
     All,
     Batch(String),
     Instance(String),
+    /// The games picked in the grid, sorted by key; never fewer than two.
+    Games(Vec<String>),
 }
 
 /// One entry of the recipient list.
@@ -39,6 +43,7 @@ pub fn on_page(m: &Model, target: &Target, scope: Option<&str>) -> bool {
         (Target::Batch(id), scope) => scope == Some(id.as_str()),
         (Target::Instance(key), None) => m.games.contains_key(key),
         (Target::Instance(key), Some(batch)) => m.games.get(key).is_some_and(|g| g.batch_id == batch),
+        (Target::Games(keys), scope) => keys.iter().all(|k| on_page(m, &Target::Instance(k.clone()), scope)),
     }
 }
 
@@ -48,6 +53,7 @@ pub fn exists(m: &Model, target: &Target) -> bool {
         Target::All => true,
         Target::Batch(id) => m.batch(id).is_some(),
         Target::Instance(key) => m.games.contains_key(key),
+        Target::Games(keys) => keys.iter().any(|k| m.games.contains_key(k)),
     }
 }
 
@@ -57,6 +63,7 @@ pub fn reached(m: &Model, target: &Target) -> usize {
         Target::All => m.games.values().filter(|g| g.phase.can_chat()).count(),
         Target::Batch(id) => m.games.values().filter(|g| g.batch_id == *id && g.phase.can_chat()).count(),
         Target::Instance(key) => usize::from(m.games.get(key).is_some_and(|g| g.phase.can_chat())),
+        Target::Games(keys) => keys.iter().filter(|k| m.games.get(*k).is_some_and(|g| g.phase.can_chat())).count(),
     }
 }
 
@@ -67,6 +74,7 @@ pub fn keys_of(m: &Model, target: &Target) -> Vec<String> {
         Target::All => true,
         Target::Batch(id) => g.batch_id == *id,
         Target::Instance(key) => g.key == *key,
+        Target::Games(keys) => keys.contains(&g.key),
     };
     m.games.values().filter(|g| g.phase != Phase::Stopped).filter(meant).map(|g| g.key.clone()).collect()
 }
@@ -77,6 +85,37 @@ pub fn name(m: &Model, target: &Target) -> String {
         Target::All => tr("Alle"),
         Target::Batch(id) => m.batch(id).map(|b| trf("Alle in %@", &[&b.name])).unwrap_or_default(),
         Target::Instance(key) => m.games.get(key).map(|g| g.name.clone()).unwrap_or_default(),
+        Target::Games(keys) => trf("%lld Konten", &[&keys.len()]),
+    }
+}
+
+/// The recipient in use on the page of `batch`: the one `picked` while it still exists and belongs to the page, else the
+/// games of `selection` that are on the page (one game, or exactly those several), else the batch, else everyone. A picked
+/// one that is gone gives nobody, so a line never goes to more games than the person chose.
+pub fn resolve(m: &Model, batch: Option<&str>, picked: Option<&Target>, selection: &BTreeSet<String>) -> Option<Target> {
+    match picked {
+        Some(t) if !exists(m, t) => return None,
+        Some(t) if on_page(m, t, batch) => return Some(t.clone()),
+        _ => {}
+    }
+    let mut keys: Vec<String> = selection.iter().filter(|k| on_page(m, &Target::Instance((*k).clone()), batch)).cloned().collect();
+    match keys.len() {
+        0 => Some(batch.map_or(Target::All, |b| Target::Batch(b.to_owned()))),
+        1 => Some(Target::Instance(keys.remove(0))),
+        _ => Some(Target::Games(keys)),
+    }
+}
+
+/// What the message field says about who gets the line: one account by name, the picked ones by count, or everyone of the
+/// page by count.
+pub fn placeholder(m: &Model, target: &Target) -> String {
+    let meant = keys_of(m, target).len();
+    match target {
+        _ if meant == 0 => tr("Nachricht oder /Befehl"),
+        Target::Instance(_) => trf("An %@", &[&name(m, target)]),
+        _ if meant == 1 => tr("An 1 Konto"),
+        Target::Games(_) => trf("An %lld ausgewählte Konten", &[&meant]),
+        Target::All | Target::Batch(_) => trf("An alle %lld Konten", &[&meant]),
     }
 }
 
@@ -101,7 +140,7 @@ fn group(m: &Model, target: Target) -> Choice {
             let total = m.games.values().filter(|g| g.batch_id == *id).count();
             (name(m, &target), trf("%lld von %lld im Spiel", &[&reached, &total]))
         }
-        Target::Instance(_) => unreachable!(),
+        Target::Instance(_) | Target::Games(_) => unreachable!(),
     };
     Choice { target, label, detail, state: (reached == 0).then(|| tr("niemand im Spiel")), reached, account: None, heading: None }
 }
@@ -257,6 +296,69 @@ mod tests {
         assert_eq!(keys, ["k1", "k2"]);
         assert_eq!(keys_of(&m, &Target::Instance("k3".into())), Vec::<String>::new());
         assert_eq!(keys_of(&m, &Target::All).len(), 3);
+    }
+
+    fn picked(keys: &[&str]) -> BTreeSet<String> {
+        keys.iter().map(|k| k.to_string()).collect()
+    }
+
+    #[test]
+    fn no_selection_sends_to_the_whole_page() {
+        let m = world();
+        assert_eq!(resolve(&m, Some("farm"), None, &picked(&[])), Some(Target::Batch("farm".into())));
+        assert_eq!(resolve(&m, None, None, &picked(&[])), Some(Target::All));
+    }
+
+    #[test]
+    fn one_selected_tile_is_the_only_recipient() {
+        let m = world();
+        assert_eq!(resolve(&m, Some("farm"), None, &picked(&["k2"])), Some(Target::Instance("k2".into())));
+    }
+
+    #[test]
+    fn several_selected_tiles_are_exactly_the_recipients() {
+        let m = world();
+        let t = resolve(&m, Some("farm"), None, &picked(&["k2", "k1"])).unwrap();
+        assert_eq!(t, Target::Games(vec!["k1".into(), "k2".into()]));
+        let mut keys = keys_of(&m, &t);
+        keys.sort();
+        assert_eq!(keys, ["k1", "k2"]);
+    }
+
+    #[test]
+    fn a_cleared_selection_goes_back_to_everyone() {
+        let m = world();
+        let one = resolve(&m, Some("farm"), None, &picked(&["k1"]));
+        assert_eq!(one, Some(Target::Instance("k1".into())));
+        assert_eq!(resolve(&m, Some("farm"), None, &picked(&[])), Some(Target::Batch("farm".into())));
+    }
+
+    #[test]
+    fn selected_games_of_other_batches_are_not_recipients() {
+        let m = world();
+        assert_eq!(resolve(&m, Some("farm"), None, &picked(&["k4"])), Some(Target::Batch("farm".into())));
+        assert_eq!(resolve(&m, Some("farm"), None, &picked(&["k1", "k4"])), Some(Target::Instance("k1".into())));
+        assert_eq!(resolve(&m, Some("farm"), None, &picked(&["gone"])), Some(Target::Batch("farm".into())));
+    }
+
+    #[test]
+    fn a_pick_in_the_list_beats_the_selection_and_a_gone_pick_gives_nobody() {
+        let m = world();
+        let pick = Target::Instance("k2".into());
+        assert_eq!(resolve(&m, Some("farm"), Some(&pick), &picked(&["k1"])), Some(pick));
+        assert_eq!(resolve(&m, Some("farm"), Some(&Target::Instance("gone".into())), &picked(&["k1"])), None);
+        assert_eq!(resolve(&m, Some("farm"), Some(&Target::Instance("k4".into())), &picked(&["k1"])), Some(Target::Instance("k1".into())));
+    }
+
+    #[test]
+    fn the_field_names_who_gets_the_line() {
+        crate::core::i18n::init("de");
+        let m = world();
+        assert_eq!(placeholder(&m, &Target::Instance("k1".into())), "An Zed");
+        assert_eq!(placeholder(&m, &Target::Games(vec!["k1".into(), "k2".into()])), "An 2 ausgewählte Konten");
+        assert_eq!(placeholder(&m, &Target::Batch("farm".into())), "An alle 2 Konten");
+        assert_eq!(placeholder(&m, &Target::All), "An alle 3 Konten");
+        assert_eq!(placeholder(&m, &Target::Instance("k3".into())), "Nachricht oder /Befehl");
     }
 
     #[test]

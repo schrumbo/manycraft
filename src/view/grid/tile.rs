@@ -74,8 +74,7 @@ fn glyph(p: Primary) -> Icon {
 }
 
 fn open_chat(store: Store, key: &str) {
-    let mut shared = store.ui.chat;
-    shared.target.set(Some(crate::view::chat::Target::Instance(key.to_owned())));
+    crate::view::chat::aim(store, crate::view::chat::Target::Instance(key.to_owned()));
     crate::view::chat::focus(store);
 }
 

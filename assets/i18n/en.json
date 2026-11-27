@@ -2444,5 +2444,10 @@
   "Titel und Hinweiszeile": "Title and action bar",
   "Große Titel mit Untertitel und die Zeile über der Schnellleiste.": "Large titles with subtitle and the line above the hotbar.",
   "Dunkle Ränder": "Dark edges",
-  "Der Schatten an den Bildrändern, wenn es dunkel ist.": "The shadow at the picture's edges when it is dark."
+  "Der Schatten an den Bildrändern, wenn es dunkel ist.": "The shadow at the picture's edges when it is dark.",
+  "%lld Konten": "%lld accounts",
+  "An %@": "To %@",
+  "An 1 Konto": "To 1 account",
+  "An %lld ausgewählte Konten": "To %lld selected accounts",
+  "An alle %lld Konten": "To all %lld accounts"
 }
