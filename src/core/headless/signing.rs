@@ -156,6 +156,59 @@ mod tests {
         assert_eq!(checksum(&[signature(1), signature(2)]), (-31i8) as u8);
     }
 
+    const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCfkXywqAbUe07p
+hWzTIUS0AHAPD0O2yYPwuMo9N/mQz01O0QvwBMz1tmri690YqZKqcQEXo+o88ogU
+5Om8jCUTwxzL5A4pJ4erjbuVwBwXlHZGtbwS9HEoN5gNSiW1HhcvqowcYKNxR0c5
+EsDJq8H/mEHMiNrm5kahbs3CN0YLjcphFnvRaayYJVgidw0FOTKfaXXyXuz1bYUP
+4MdvvLxhcKIDqi5neAUjlVgbXXDOejWXoStjOe3x70ZZxit8Rs5NCvoybADc8T1p
+gFx1PFc4e1ZoqysBUBoboYjM+eg9m15D4Vv0AmF5G7KPKEYtFuYe0C8Aj6spoBfi
+lPWUEvHLAgMBAAECggEAOgZGINkhDrA+TFWb8pSE7q3AEgHbfkL+KxGPXT6XDm0L
+sC79V8zvGSS57oWVcyvqrPcFzippebs599scEdemfe6z8IKgEaARyjTycyyWKo7u
+iZz5ZK0l3tmEfcSqPJfSF5+9bm5H0N/6CsuCdnNySrb7qlxTuaYgJgDsaoT+ACH+
+4ybppH+lIfsdXqG2H0jsjfPdDIYOsP/nR+mKYiAv29a3KG2ZZA6N5/RR4s6wIesS
+IpaRTyNgTXwj2iKXoPRFjCWE8WzfaxHLyxGM3pvSY2XIh0m7Bwru6D9V+DHy9g04
+U3266OrFLVLT3EIn7WnqCkRTNKElCqD9JMeE0Ei40QKBgQDNzVWHwOUtlFqr0OZp
+0AZZeMIuXIQ1XZQW02mJkiOKPbHLwP+5b2SvndNUkANs+sS2ICKOZFc3QiX2bxiU
+mlhJLa+EP6Uu2tWOmgwfVgT7pYnBeq6OfzM5cWHZJJyS0IFqAwNiv/eFg7OB0Kmt
+6R0HRRoz9XZUQC9opL6oCQcFewKBgQDGfTrO9PolvcnJ21C0CmrzVK3EkLwP85oS
+HpKOPHHlZzy31lhjqtBMacGV/ATpUztAnlX2AJozJr1N5O0hoHcUKNuhA5LpMLXa
+z7gLIGa0F3/JSSmtJ9IUvD/5T3mGTXroelCtshJubmqh23taoy9S2M36j3mtlNnu
+vDHMMGeL8QKBgHDZBu1JeGFl19Ie2jlrOBAXh2KkmFoq1ekuQ9CLsbE74yI20gJ8
+cllZ0WetEDPRzcuQE2LA4pIKU4atpGzXtVFrG7MIsyreE/v9vGfyYwkZ3E+bVdwN
+I6l74ouO58wZSN04icK8QJ2VefjU0jXqfWBfI98Z2aiZCWX38BNz38XBAoGBAI3h
+ai4RUtWzihAuIsvvPm/dMbD2PFeyq4kULXJappdyaiaGovvrV6WnWudZFDGsewg/
+pfaIi7DQmjSZ1R9aUoQoiIXZxiPF29gi7s2VRZSpz4AUOiQ5+KM1xQzy0E0+CQMw
+m4btaNtjNfmop84sI2G289WMxU9cvUM3ZuksGHghAoGAZK5o7/LuGJ2FtSvkCK23
+x6HNpu8LNvYJOuy1PgUyLX/MdIxHc1tY7FG/FIWRGwqufLMEH1pgo+mqvgjgc25v
+J0zMk+otOTJJmEn0aID91LvMX0ePRqqjrqkwqvxHlos6IN5slAaN3rgJ6Um05KRM
+R5Kiau6Idmd077IA6MLGdPk=
+-----END PRIVATE KEY-----";
+
+    fn test_signer() -> Signer {
+        let public = hex_bytes("30820122300d06092a864886f70d01010105000382010f003082010a02820101009f917cb0a806d47b4ee9856cd32144b400700f0f43b6c983f0b8ca3d37f990cf4d4ed10bf004ccf5b66ae2ebdd18a992aa710117a3ea3cf28814e4e9bc8c2513c31ccbe40e292787ab8dbb95c01c17947646b5bc12f4712837980d4a25b51e172faa8c1c60a37147473912c0c9abc1ff9841cc88dae6e646a16ecdc237460b8dca61167bd169ac98255822770d0539329f6975f25eecf56d850fe0c76fbcbc6170a203aa2e6778052395581b5d70ce7a3597a12b6339edf1ef4659c62b7c46ce4d0afa326c00dcf13d69805c753c57387b5668ab2b01501a1ba188ccf9e83d9b5e43e15bf40261791bb28f28462d16e61ed02f008fab29a017e294f59412f1cb0203010001");
+        Signer { key: SigningKey::from_pem(TEST_KEY).unwrap(), session: Uuid::from_u128(SESSION), sender: Uuid::from_u128(SENDER), index: 0, certificate: (1_796_119_200_123, public, vec![1, 2, 3, 4, 5]) }
+    }
+
+    fn hex_bytes(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn the_session_announcement_is_what_the_games_packet_codec_writes() {
+        assert_eq!(hex(&test_signer().announcement().0), "1112131415161718191a1b1c1d1e1f20000001a2310c017ba60230820122300d06092a864886f70d01010105000382010f003082010a02820101009f917cb0a806d47b4ee9856cd32144b400700f0f43b6c983f0b8ca3d37f990cf4d4ed10bf004ccf5b66ae2ebdd18a992aa710117a3ea3cf28814e4e9bc8c2513c31ccbe40e292787ab8dbb95c01c17947646b5bc12f4712837980d4a25b51e172faa8c1c60a37147473912c0c9abc1ff9841cc88dae6e646a16ecdc237460b8dca61167bd169ac98255822770d0539329f6975f25eecf56d850fe0c76fbcbc6170a203aa2e6778052395581b5d70ce7a3597a12b6339edf1ef4659c62b7c46ce4d0afa326c00dcf13d69805c753c57387b5668ab2b01501a1ba188ccf9e83d9b5e43e15bf40261791bb28f28462d16e61ed02f008fab29a017e294f59412f1cb0203010001050102030405");
+    }
+
+    #[test]
+    fn each_signature_is_one_step_further_down_the_chain() {
+        let mut signer = test_signer();
+        let key = SigningKey::from_pem(TEST_KEY).unwrap();
+        let at = |index| key.sign(&payload(Uuid::from_u128(SENDER), Uuid::from_u128(SESSION), index, SALT, 5_000, "hi", &[signature(1)]));
+        assert_eq!(signer.sign("hi", SALT, 5_000, &[signature(1)]).unwrap().to_vec(), at(0));
+        assert_eq!(signer.sign("hi", SALT, 5_000, &[signature(1)]).unwrap().to_vec(), at(1));
+        assert_ne!(at(0), at(1));
+    }
+
     #[test]
     fn the_window_acknowledges_what_it_holds_oldest_first_and_counts_what_is_new() {
         let mut seen = Seen::default();

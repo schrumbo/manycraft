@@ -53,6 +53,7 @@ const TILE_WIDTH: u32 = 640;
 const SHOT_RADIUS: i32 = 2;
 const SHOT_WAIT: Duration = Duration::from_secs(10);
 const QUEUED_MAX: usize = 4;
+const CERTIFICATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 static PICTURES: AtomicU32 = AtomicU32::new(0);
 static QUEUED: AtomicUsize = AtomicUsize::new(0);
@@ -455,7 +456,7 @@ fn chat_certificate(shared: &Shared, spec: &Spec, session: &Session) -> Option<A
     if let Some(certificate) = kept.as_ref().filter(|c| c.is_current(now)) {
         return Some(Arc::clone(certificate));
     }
-    let fetched = crate::core::net::agent(None).and_then(|agent| crate::core::auth::chat_certificate(&agent, &session.access_token));
+    let fetched = crate::core::auth::chat_certificate(&crate::core::net::agent_within(CERTIFICATE_TIMEOUT), &session.access_token);
     match fetched {
         Ok(certificate) => Some(Arc::clone(kept.insert(Arc::new(certificate)))),
         Err(e) => {
@@ -743,15 +744,19 @@ fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(L
                         return Ok(Some((reason, cause)));
                     }
                     verified = true;
-                    let certificate = chat_certificate(shared, spec, session);
-                    shared.lock().certificate = certificate;
                 }
                 let sealed_secret = crypto::rsa_encrypt(&key, &secret)?;
                 let sealed_token = crypto::rsa_encrypt(&key, &token)?;
-                let mut link = shared.lock();
-                write(&mut link, s::KEY, Out::default().bytes(&sealed_secret).bytes(&sealed_token))?;
-                link.writer.as_mut().context("not connected")?.encrypt(&secret);
+                {
+                    let mut link = shared.lock();
+                    write(&mut link, s::KEY, Out::default().bytes(&sealed_secret).bytes(&sealed_token))?;
+                    link.writer.as_mut().context("not connected")?.encrypt(&secret);
+                }
                 reader.encrypt(&secret);
+                if let (true, Some(session)) = (verified, &spec.session) {
+                    let certificate = chat_certificate(shared, spec, session);
+                    shared.lock().certificate = certificate;
+                }
             }
             c::LOGIN_COMPRESSION => {
                 let threshold = usize::try_from(r.varint()?).ok();
