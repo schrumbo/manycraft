@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -26,6 +27,7 @@ const XBL_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_LOGIN_URL: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
 const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profile";
+const MC_CERTIFICATES_URL: &str = "https://api.minecraftservices.com/player/certificates";
 const XSTS_RELYING_PARTY: &str = "rp://api.minecraftservices.com/";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const MAX_BODY: u64 = 1 << 20;
@@ -117,6 +119,73 @@ impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Session").field("name", &self.name).field("uuid", &self.uuid).field("expires_at", &self.expires_at).finish_non_exhaustive()
     }
+}
+
+/// The key pair Mojang certifies for signing an account's chat, with the signature that proves it.
+pub struct ChatCertificate {
+    /// PEM, PKCS#8 whatever its label says.
+    pub private_key: String,
+    /// DER SubjectPublicKeyInfo.
+    pub public_key: Vec<u8>,
+    pub signature: Vec<u8>,
+    /// Epoch milliseconds, cut not rounded: Mojang signed exactly this.
+    pub expires_at: i64,
+    pub refresh_after: i64,
+}
+
+impl fmt::Debug for ChatCertificate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChatCertificate").field("expires_at", &self.expires_at).field("refresh_after", &self.refresh_after).finish_non_exhaustive()
+    }
+}
+
+impl ChatCertificate {
+    /// Whether it can still sign at epoch millisecond `now`: not yet due for a new one.
+    pub fn is_current(&self, now: i64) -> bool {
+        now < self.refresh_after.min(self.expires_at)
+    }
+}
+
+/// Asks Mojang for the chat key pair of the account `token` belongs to. Errors name the status, never the key or the token.
+pub fn chat_certificate(agent: &ureq::Agent, token: &str) -> Result<ChatCertificate> {
+    let res = agent.post(MC_CERTIFICATES_URL).header("Authorization", format!("Bearer {token}")).config().http_status_as_error(false).build().send_empty();
+    let reply = reply(MC_CERTIFICATES_URL, res)?;
+    ensure!(reply.is_ok(), "Minecraft services refused the chat key with status {}", reply.status);
+    parse_certificate(&reply.body)
+}
+
+fn parse_certificate(body: &[u8]) -> Result<ChatCertificate> {
+    #[derive(Deserialize)]
+    struct Pair {
+        #[serde(rename = "privateKey")]
+        private_key: String,
+        #[serde(rename = "publicKey")]
+        public_key: String,
+    }
+    #[derive(Deserialize)]
+    struct Raw {
+        #[serde(rename = "keyPair")]
+        pair: Pair,
+        #[serde(rename = "publicKeySignatureV2")]
+        signature: String,
+        #[serde(rename = "expiresAt")]
+        expires_at: String,
+        #[serde(rename = "refreshedAfter")]
+        refresh_after: String,
+    }
+    let raw: Raw = serde_json::from_slice(body).map_err(|_| anyhow!("the chat key answer is not what Minecraft services sends"))?;
+    let der = |pem: &str| {
+        let body: String = pem.lines().filter(|l| !l.starts_with("-----")).flat_map(str::chars).filter(|c| !c.is_whitespace()).collect();
+        base64::engine::general_purpose::STANDARD.decode(body).map_err(|_| anyhow!("the chat public key is not base64"))
+    };
+    let millis = |iso: &str| chrono::DateTime::parse_from_rfc3339(iso).map(|t| t.timestamp_millis()).map_err(|_| anyhow!("the chat key has an unreadable date"));
+    Ok(ChatCertificate {
+        private_key: raw.pair.private_key,
+        public_key: der(&raw.pair.public_key)?,
+        signature: base64::engine::general_purpose::STANDARD.decode(raw.signature.trim()).map_err(|_| anyhow!("the chat key signature is not base64"))?,
+        expires_at: millis(&raw.expires_at)?,
+        refresh_after: millis(&raw.refresh_after)?,
+    })
 }
 
 /// The code a person types at the verification page.
@@ -1721,5 +1790,19 @@ mod tests {
         assert_eq!(kind(&fail(flow(&base).session(&secret_tokens()))), Some(&AuthError::AppNotApproved));
         assert_eq!(requests(&seen, "/mc/login").len(), 1);
         assert!(pauses().is_empty());
+    }
+
+    #[test]
+    fn a_chat_certificate_keeps_the_expiry_cut_to_milliseconds_and_never_prints_its_key() {
+        let body = "{\"keyPair\":{\"privateKey\":\"-----BEGIN RSA PRIVATE KEY-----\\nQUJD\\n-----END RSA PRIVATE KEY-----\\n\",\"publicKey\":\"-----BEGIN RSA PUBLIC KEY-----\\nREVG\\nR0hJ\\n-----END RSA PUBLIC KEY-----\\n\"},\"publicKeySignature\":\"AAAA\",\"publicKeySignatureV2\":\"c2ln\",\"expiresAt\":\"2026-12-01T10:00:00.123987654Z\",\"refreshedAfter\":\"2026-11-28T10:00:00.999Z\"}";
+        let cert = parse_certificate(body.as_bytes()).unwrap();
+        assert_eq!(cert.public_key, b"DEFGHI");
+        assert_eq!(cert.signature, b"sig");
+        assert_eq!(cert.expires_at, 1_796_119_200_123, "123987654 ns are 123 ms, not 124");
+        assert_eq!(cert.refresh_after, 1_795_860_000_999);
+        assert!(cert.private_key.contains("QUJD"));
+        assert!(!format!("{cert:?}").contains("QUJD"));
+        assert!(cert.is_current(cert.refresh_after - 1) && !cert.is_current(cert.refresh_after));
+        assert!(parse_certificate(b"{}").is_err());
     }
 }

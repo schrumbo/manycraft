@@ -4,8 +4,10 @@
 use aes::Aes128;
 use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
 use anyhow::{Context, Result, ensure};
+use base64::Engine;
 use num_bigint::BigUint;
 use sha1::{Digest, Sha1};
+use sha2::Sha256;
 
 const MAX_MODULUS: usize = 512;
 const MAX_EXPONENT: usize = 8;
@@ -110,6 +112,60 @@ pub fn rsa_encrypt(spki: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     let mut out = vec![0u8; k - c.len()];
     out.extend_from_slice(&c);
     Ok(out)
+}
+
+/// The DER prefix of a SHA-256 `DigestInfo`, which PKCS#1 v1.5 signatures wrap the hash in.
+const SHA256_DIGEST_INFO: [u8; 19] = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
+
+/// An account's RSA key for signing chat: SHA256withRSA, PKCS#1 v1.5. Not `Debug`, so it never lands in a log.
+pub struct SigningKey {
+    n: BigUint,
+    d: BigUint,
+    len: usize,
+}
+
+impl SigningKey {
+    /// Reads a PEM private key, PKCS#8 or PKCS#1 whatever its label says; Mojang labels PKCS#8 keys "RSA PRIVATE KEY".
+    pub fn from_pem(pem: &str) -> Result<Self> {
+        let body: String = pem.lines().filter(|l| !l.starts_with("-----")).flat_map(str::chars).filter(|c| !c.is_whitespace()).collect();
+        let der_bytes = base64::engine::general_purpose::STANDARD.decode(body).context("the private key is not base64")?;
+        let mut outer = Der(der(&mut Der(&der_bytes), 0x30)?);
+        der(&mut outer, 0x02)?;
+        let mut key = match outer.0.first() {
+            Some(0x30) => {
+                der(&mut outer, 0x30)?;
+                Der(der(&mut Der(der(&mut outer, 0x04)?), 0x30)?)
+            }
+            _ => outer,
+        };
+        if matches!(key.0.first(), Some(0x02)) && key.0.get(1) == Some(&1) && key.0.get(2) == Some(&0) {
+            der(&mut key, 0x02)?;
+        }
+        let n = der(&mut key, 0x02)?;
+        der(&mut key, 0x02)?;
+        let d = der(&mut key, 0x02)?;
+        ensure!(n.len() <= MAX_MODULUS + 1, "RSA key larger than any server accepts");
+        let n = BigUint::from_bytes_be(n);
+        let len = usize::try_from(n.bits().div_ceil(8))?;
+        ensure!(len >= SHA256_DIGEST_INFO.len() + 32 + 11, "RSA key too small");
+        Ok(Self { n, d: BigUint::from_bytes_be(d), len })
+    }
+
+    /// The SHA256withRSA signature of `message`, as long as the key's modulus.
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        let hash = Sha256::digest(message);
+        let mut block = vec![0xff; self.len];
+        block[0] = 0;
+        block[1] = 1;
+        let tail = SHA256_DIGEST_INFO.len() + hash.len();
+        block[self.len - tail - 1] = 0;
+        block[self.len - tail..self.len - hash.len()].copy_from_slice(&SHA256_DIGEST_INFO);
+        block[self.len - hash.len()..].copy_from_slice(&hash);
+        let signed = BigUint::from_bytes_be(&block).modpow(&self.d, &self.n).to_bytes_be();
+        let mut out = vec![0; self.len - signed.len()];
+        out.extend_from_slice(&signed);
+        out
+    }
 }
 
 /// Fills `out` from the system's secure random source.
@@ -244,6 +300,48 @@ mod tests {
         assert_eq!(opened[k - secret.len() - 1], 0);
         assert_eq!(&opened[k - secret.len()..], &secret);
         assert_ne!(rsa_encrypt(&spki, &secret).unwrap(), sealed, "padding is random");
+    }
+
+    const KEY_PKCS8: &str = "-----BEGIN PRIVATE KEY-----
+MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGBAPMes6w6vXk66li/
+u0/RuatVtVTE+JdJxDvzbsN19at+mQs1/dFU/bHmohTQJZgl3XZ4x/nAUCXdOaND
+Gf6KLc6OtFHR98VQmLTyQyxaZHYGLhOyNszC5d5M6ap45bKYb5aWKWEcv/jh0rHq
+bwCy2gNFMss6nCFzYENpbYAtO5tfAgMBAAECgYBLtd7sHqrMqv05wBOb6srwQVOj
+32cu7ejvZoKy2fQ0gMs2Q40UeGw8z37gDmX2uKv77ecQrsQG1prRbd8VdoCGvGU/
+oL++XqPVQojKKsHu62cLc9NdJdM/H+przSLiCssO1miVBpbfhFACPCgP+/rNuGZv
+rbA2qABIty6bylD9WQJBAPsiWDoCZPLVuZDnRl/WBe3qyfNwsQRdBH2aPXUT/z5g
+iVcSuhS2OHHzW9so6azaYckAWIvUR8ZReGHPH2lwiusCQQD31JsNqXMARcL3t5Ua
+oPsvbl09Si3Xl21Ofo4l104nrtKf+BdRi0/hyScE/zescNO06q+Ky3VgJ4hK5dni
+umxdAkEAsfmEBxBdVE8s5ElS8WYu645iMrkhalM1dIITnd5fHGizzFaEM1t0IyVx
+ap7TA+H8PMOW/PmjKCPiqYZs33+XowJAcSHXqjPpMH2oE+b1JNPJ9ov9+kWLibgx
+iLyS7UlM/yZ6NdZN5saer6ZgrpJG+uwCaLsdaVGZgkxpli84+Jw7bQJAWvo73Gjo
+a/v1l+FBtwLMQpfKhVn+Oe+JOAfMLHMW741Y928nssHXaPzTfMToXjqZEeh3Ssdv
+gQcbr/IfwCSwNw==
+-----END PRIVATE KEY-----";
+    const KEY_PKCS1: &str = "-----BEGIN RSA PRIVATE KEY-----
+MIICXAIBAAKBgQDzHrOsOr15OupYv7tP0bmrVbVUxPiXScQ7827DdfWrfpkLNf3R
+VP2x5qIU0CWYJd12eMf5wFAl3TmjQxn+ii3OjrRR0ffFUJi08kMsWmR2Bi4TsjbM
+wuXeTOmqeOWymG+WlilhHL/44dKx6m8AstoDRTLLOpwhc2BDaW2ALTubXwIDAQAB
+AoGAS7Xe7B6qzKr9OcATm+rK8EFTo99nLu3o72aCstn0NIDLNkONFHhsPM9+4A5l
+9rir++3nEK7EBtaa0W3fFXaAhrxlP6C/vl6j1UKIyirB7utnC3PTXSXTPx/qa80i
+4grLDtZolQaW34RQAjwoD/v6zbhmb62wNqgASLcum8pQ/VkCQQD7Ilg6AmTy1bmQ
+50Zf1gXt6snzcLEEXQR9mj11E/8+YIlXEroUtjhx81vbKOms2mHJAFiL1EfGUXhh
+zx9pcIrrAkEA99SbDalzAEXC97eVGqD7L25dPUot15dtTn6OJddOJ67Sn/gXUYtP
+4cknBP83rHDTtOqvist1YCeISuXZ4rpsXQJBALH5hAcQXVRPLORJUvFmLuuOYjK5
+IWpTNXSCE53eXxxos8xWhDNbdCMlcWqe0wPh/DzDlvz5oygj4qmGbN9/l6MCQHEh
+16oz6TB9qBPm9STTyfaL/fpFi4m4MYi8ku1JTP8mejXWTebGnq+mYK6SRvrsAmi7
+HWlRmYJMaZYvOPicO20CQFr6O9xo6Gv79ZfhQbcCzEKXyoVZ/jnviTgHzCxzFu+N
+WPdvJ7LB12j803zE6F46mRHod0rHb4EHG6/yH8AksDc=
+-----END RSA PRIVATE KEY-----";
+    const SIGNED: &str = "91011e1b3ae391a9fb9d19376514a5042916d69a1e86ebe369b9f862378c05f34cd513178e553656c584ce7fd8b4b0177778deabe65e56a2ccee01d4b56bc057b208aa221e8f8a137ed03e6f6894b648b3f798e25decec504f961a47aaf433a00b8ce1313f9e8e5da01f28dabe4d3bd2955a5b0825a11bf0217b24d482c873b7";
+
+    #[test]
+    fn signing_matches_openssl_for_both_private_key_layouts() {
+        for pem in [KEY_PKCS8, KEY_PKCS1, &KEY_PKCS8.replace("BEGIN PRIVATE", "BEGIN RSA PRIVATE").replace("END PRIVATE", "END RSA PRIVATE")] {
+            let key = SigningKey::from_pem(pem).unwrap();
+            assert_eq!(key.sign(b"manycraft signed chat").iter().map(|b| format!("{b:02x}")).collect::<String>(), SIGNED);
+        }
+        assert!(SigningKey::from_pem("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----").is_err());
     }
 
     #[test]

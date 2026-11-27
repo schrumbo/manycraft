@@ -14,10 +14,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::commands::Tree;
 use super::crowd::Crowd;
 use super::maps::Maps;
 use super::picture::{self, Request, View};
 use super::screen::Screen;
+use super::signing::{Seen, Signature, Signer};
 use super::status::Status;
 use super::Spec;
 use super::classify::classify;
@@ -27,7 +29,7 @@ use super::text::{self, Line};
 use super::v777::{PROTOCOL, configuration as cfg, login, play};
 use super::wire::{In, Out};
 use super::world::World;
-use crate::core::auth::Session;
+use crate::core::auth::{ChatCertificate, Session};
 use crate::core::batch::Packs;
 use crate::core::chat_pace::{Next, Queue};
 use crate::core::chat_text::Run;
@@ -117,7 +119,10 @@ struct Link {
     position: [f64; 3],
     rotation: [f32; 2],
     chat_clock: i64,
-    unacked: i32,
+    seen: Seen,
+    certificate: Option<Arc<ChatCertificate>>,
+    signer: Option<Signer>,
+    commands: Option<Tree>,
     lines: Queue<(Option<u64>, String)>,
     closed: bool,
     shown: Option<Shown>,
@@ -136,6 +141,7 @@ pub struct Shared {
     key: String,
     events: Sender<Event>,
     link: Mutex<Link>,
+    certificate: Mutex<Option<Arc<ChatCertificate>>>,
     wake: Condvar,
     running: AtomicBool,
     drawing: Arc<AtomicBool>,
@@ -157,7 +163,10 @@ impl Shared {
             position: [0.0; 3],
             rotation: [0.0; 2],
             chat_clock: 0,
-            unacked: 0,
+            seen: Seen::default(),
+            certificate: None,
+            signer: None,
+            commands: None,
             lines: Queue::new(Instant::now()),
             closed: false,
             shown: None,
@@ -170,7 +179,7 @@ impl Shared {
             dimension: String::new(),
             due: None,
         };
-        Self { key: spec.key.clone(), events, link: Mutex::new(link), wake: Condvar::new(), running: AtomicBool::new(true), drawing: Arc::default() }
+        Self { key: spec.key.clone(), events, link: Mutex::new(link), certificate: Mutex::new(None), wake: Condvar::new(), running: AtomicBool::new(true), drawing: Arc::default() }
     }
 
     pub fn is_running(&self) -> bool {
@@ -394,11 +403,16 @@ fn write(link: &mut Link, id: i32, body: &mut Out) -> Result<()> {
     sent
 }
 
-fn answer_pack(link: &mut Link, id: Uuid, accept: bool) -> Result<()> {
-    let packet = if link.phase == Phase::Play { play::serverbound::RESOURCE_PACK } else { cfg::serverbound::RESOURCE_PACK };
+/// The answers to a pushed pack in the order the game gives them: accepted, downloaded and loaded without fetching it, or declined.
+fn pack_answers(phase: Phase, id: Uuid, accept: bool) -> Vec<(i32, Vec<u8>)> {
+    let packet = if phase == Phase::Play { play::serverbound::RESOURCE_PACK } else { cfg::serverbound::RESOURCE_PACK };
     let actions: &[i32] = if accept { &[PACK_ACCEPTED, PACK_DOWNLOADED, PACK_LOADED] } else { &[PACK_DECLINED] };
-    for action in actions {
-        write(link, packet, Out::default().uuid(id).varint(*action))?;
+    actions.iter().map(|action| (packet, Out::default().uuid(id).varint(*action).0.clone())).collect()
+}
+
+fn answer_pack(link: &mut Link, id: Uuid, accept: bool) -> Result<()> {
+    for (packet, mut body) in pack_answers(link.phase, id, accept).into_iter().map(|(p, b)| (p, Out(b))) {
+        write(link, packet, &mut body)?;
     }
     Ok(())
 }
@@ -417,7 +431,42 @@ fn refusal(link: &Link, text: &str) -> Option<ChatRefusal> {
     None
 }
 
-/// Sends what the user typed: a command when it starts with `/`, otherwise a chat message, both unsigned.
+/// Tells the server which key this connection signs its chat with, if the account has one.
+fn start_chat_session(shared: &Shared, link: &mut Link) -> Result<()> {
+    link.seen = Seen::default();
+    link.signer = None;
+    link.commands = None;
+    let Some(certificate) = link.certificate.clone() else { return Ok(()) };
+    match Signer::new(&certificate, link.me) {
+        Ok(signer) => {
+            write(link, play::serverbound::CHAT_SESSION_UPDATE, &mut signer.announcement())?;
+            link.signer = Some(signer);
+        }
+        Err(e) => eprintln!("{}: chat goes out unsigned, its key is unusable: {e:#}", shared.key),
+    }
+    Ok(())
+}
+
+/// The account's chat key: the one kept from an earlier connection while it is current, otherwise a fresh one from Mojang.
+/// `None` when it cannot be had, and chat then goes out unsigned.
+fn chat_certificate(shared: &Shared, spec: &Spec, session: &Session) -> Option<Arc<ChatCertificate>> {
+    let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()?;
+    let mut kept = shared.certificate.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(certificate) = kept.as_ref().filter(|c| c.is_current(now)) {
+        return Some(Arc::clone(certificate));
+    }
+    let fetched = crate::core::net::agent(None).and_then(|agent| crate::core::auth::chat_certificate(&agent, &session.access_token));
+    match fetched {
+        Ok(certificate) => Some(Arc::clone(kept.insert(Arc::new(certificate)))),
+        Err(e) => {
+            eprintln!("{}: chat goes out unsigned, its key was not fetched: {e:#}", spec.name);
+            *kept = None;
+            None
+        }
+    }
+}
+
+/// Sends what the user typed: a command when it starts with `/`, otherwise a chat message, signed when the connection has a key.
 fn chat(link: &mut Link, text: &str) -> Result<()> {
     let text = text.trim();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
@@ -425,17 +474,31 @@ fn chat(link: &mut Link, text: &str) -> Result<()> {
     let mut salt = [0u8; 8];
     crypto::random(&mut salt)?;
     let mut out = Out::default();
-    let id = if let Some(command) = text.strip_prefix('/') {
-        out.string(command).i64(link.chat_clock).raw(&salt).varint(0);
-        play::serverbound::CHAT_COMMAND_SIGNED
-    } else {
-        out.string(text).i64(link.chat_clock).raw(&salt).bool(false);
-        play::serverbound::CHAT
+    if let Some(command) = text.strip_prefix('/') {
+        let arguments = match (&link.signer, &link.commands) {
+            (Some(_), Some(tree)) => tree.signable(command),
+            _ => Vec::new(),
+        };
+        if arguments.is_empty() {
+            return write(link, play::serverbound::CHAT_COMMAND, out.string(command));
+        }
+        let update = link.seen.update();
+        out.string(command).i64(link.chat_clock).raw(&salt).varint(i32::try_from(arguments.len())?);
+        let signer = link.signer.as_mut().context("no chat key")?;
+        for argument in &arguments {
+            out.string(&argument.name).raw(&signer.sign(&argument.value, salt, link.chat_clock, &update.signatures)?);
+        }
+        out.varint(update.offset).raw(&update.acknowledged).u8(update.checksum);
+        return write(link, play::serverbound::CHAT_COMMAND_SIGNED, &mut out);
+    }
+    let update = link.seen.update();
+    out.string(text).i64(link.chat_clock).raw(&salt);
+    match &mut link.signer {
+        Some(signer) => out.bool(true).raw(&signer.sign(text, salt, link.chat_clock, &update.signatures)?),
+        None => out.bool(false),
     };
-    out.varint(link.unacked).raw(&[0, 0, 0]).u8(0);
-    write(link, id, &mut out)?;
-    link.unacked = 0;
-    Ok(())
+    out.varint(update.offset).raw(&update.acknowledged).u8(update.checksum);
+    write(link, play::serverbound::CHAT, &mut out)
 }
 
 /// Runs the connection until it is told to quit: joins, and after a drop waits to be told to reconnect.
@@ -510,7 +573,10 @@ fn session(shared: &Shared, spec: &Spec) -> End {
         link.dead = None;
         link.loaded = false;
         link.held.clear();
-        link.unacked = 0;
+        link.seen = Seen::default();
+        link.certificate = None;
+        link.signer = None;
+        link.commands = None;
         link.crowd = Crowd::default();
         link.status.reset();
         shared.report(&mut link, StateKind::Connecting, None, None, None);
@@ -641,7 +707,7 @@ fn wanted(phase: Phase, id: i32) -> bool {
     use play::clientbound as p;
     match phase {
         Phase::Configuration => [c::COOKIE_REQUEST, c::DISCONNECT, c::FINISH_CONFIGURATION, c::KEEP_ALIVE, c::PING, c::REGISTRY_DATA, c::RESOURCE_PACK_POP, c::RESOURCE_PACK_PUSH, c::TRANSFER, c::SELECT_KNOWN_PACKS, c::CODE_OF_CONDUCT].contains(&id),
-        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LIGHT_UPDATE, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id) || Maps::reads(id) || Crowd::reads(id) || Status::reads(id) || [p::SET_TIME, p::GAME_EVENT].contains(&id),
+        _ => [p::BLOCK_UPDATE, p::CHUNK_BATCH_FINISHED, p::COMMANDS, p::FORGET_LEVEL_CHUNK, p::LEVEL_CHUNK_WITH_LIGHT, p::LIGHT_UPDATE, p::LOGIN, p::SECTION_BLOCKS_UPDATE, p::COOKIE_REQUEST, p::DISCONNECT, p::DISGUISED_CHAT, p::KEEP_ALIVE, p::PING, p::PLAYER_CHAT, p::PLAYER_COMBAT_KILL, p::PLAYER_POSITION, p::RESOURCE_PACK_POP, p::RESOURCE_PACK_PUSH, p::RESPAWN, p::SET_HEALTH, p::START_CONFIGURATION, p::SYSTEM_CHAT, p::TRANSFER].contains(&id) || Screen::reads(id) || Maps::reads(id) || Crowd::reads(id) || Status::reads(id) || [p::SET_TIME, p::GAME_EVENT].contains(&id),
     }
 }
 
@@ -677,6 +743,8 @@ fn log_in(shared: &Shared, spec: &Spec, reader: &mut Reader) -> Result<Option<(L
                         return Ok(Some((reason, cause)));
                     }
                     verified = true;
+                    let certificate = chat_certificate(shared, spec, session);
+                    shared.lock().certificate = certificate;
                 }
                 let sealed_secret = crypto::rsa_encrypt(&key, &secret)?;
                 let sealed_token = crypto::rsa_encrypt(&key, &token)?;
@@ -908,6 +976,9 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
         c::DISCONNECT => return Ok(Some(dropped(text::line(&r.nbt()?)))),
         c::PLAYER_POSITION => teleported(shared, link, r)?,
         c::LOGIN | c::LEVEL_CHUNK_WITH_LIGHT | c::LIGHT_UPDATE | c::FORGET_LEVEL_CHUNK | c::BLOCK_UPDATE | c::SECTION_BLOCKS_UPDATE => {
+            if id == c::LOGIN {
+                start_chat_session(shared, link)?;
+            }
             if let Err(e) = seen(link, id, r) {
                 eprintln!("{}: world packet {id} not read: {e:#}", shared.key);
             }
@@ -969,10 +1040,19 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
             link.status.reset();
             shared.show_screen(link);
             link.phase = Phase::Configuration;
-            link.unacked = 0;
+            link.seen = Seen::default();
+            link.signer = None;
+            link.commands = None;
         }
         c::RESOURCE_PACK_PUSH => pushed(shared, link, r)?,
         c::RESOURCE_PACK_POP => popped(shared, link, r)?,
+        c::COMMANDS if link.signer.is_some() => match Tree::read(r) {
+            Ok(tree) => link.commands = Some(tree),
+            Err(e) => {
+                link.commands = None;
+                eprintln!("{}: command tree not read, commands go out unsigned: {e:#}", shared.key);
+            }
+        },
         c::COOKIE_REQUEST => {
             let cookie = r.string()?;
             write(link, s::COOKIE_RESPONSE, Out::default().string(&cookie).bool(false))?;
@@ -1129,12 +1209,12 @@ fn player_chat(shared: &Shared, link: &mut Link, r: &mut In, types: &[ChatType])
     let _index = r.varint()?;
     let signed = r.bool()?;
     if signed {
-        link.unacked += 1;
-        if link.unacked > ACK_AFTER {
-            write(link, play::serverbound::CHAT_ACK, Out::default().varint(link.unacked))?;
-            link.unacked = 0;
+        let signature: Signature = r.take(256)?.try_into()?;
+        link.seen.add(signature);
+        if link.seen.offset() > ACK_AFTER {
+            let seen = link.seen.take_offset();
+            write(link, play::serverbound::CHAT_ACK, Out::default().varint(seen))?;
         }
-        r.take(256)?;
     }
     let content = r.string()?;
     let _time = r.i64()?;
@@ -1258,6 +1338,17 @@ mod tests {
         for id in [p::SET_EXPERIENCE, p::UPDATE_ATTRIBUTES, p::UPDATE_MOB_EFFECT, p::REMOVE_MOB_EFFECT, p::SET_OBJECTIVE, p::SET_DISPLAY_OBJECTIVE, p::SET_SCORE, p::RESET_SCORE, p::SET_PLAYER_TEAM, p::BOSS_EVENT, p::SET_TITLES_ANIMATION, p::SET_ENTITY_DATA, p::GAME_EVENT] {
             assert!(wanted(Phase::Play, id) && !essential(Phase::Play, id), "packet {id}");
         }
+    }
+
+    #[test]
+    fn a_pack_is_answered_without_downloading_it_in_the_order_the_game_answers() {
+        let id = Uuid::from_u128(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
+        let answer = |phase, accept| pack_answers(phase, id, accept);
+        let tail = |action: u8| [id.as_bytes().as_slice(), &[action]].concat();
+        assert_eq!(answer(Phase::Configuration, true), vec![(cfg::serverbound::RESOURCE_PACK, tail(3)), (cfg::serverbound::RESOURCE_PACK, tail(4)), (cfg::serverbound::RESOURCE_PACK, tail(0))]);
+        assert_eq!(answer(Phase::Play, true), vec![(play::serverbound::RESOURCE_PACK, tail(3)), (play::serverbound::RESOURCE_PACK, tail(4)), (play::serverbound::RESOURCE_PACK, tail(0))]);
+        assert_eq!(answer(Phase::Configuration, false), vec![(cfg::serverbound::RESOURCE_PACK, tail(1))]);
+        assert_eq!(answer(Phase::Play, false), vec![(play::serverbound::RESOURCE_PACK, tail(1))]);
     }
 
     fn body(host: &str, port: u16) -> Vec<u8> {

@@ -5,12 +5,13 @@
 //! pong, teleport and chunk batch confirmations, the loaded world, client settings with view distance 2, configuration
 //! answers) plus what the user wrote. It speaks Minecraft 26.3 (protocol 777). Packet ids and the English texts it
 //! shows come from the game's own data generator: `.claude/bin/headless-packets` regenerates `v777.rs` from a server jar.
-//! Chat goes out unsigned; proxies and server transfers are not supported yet. What the server shows the player (the map in
+//! Chat is signed when the account has a certified key and unsigned otherwise; proxies and server transfers are not supported yet. What the server shows the player (the map in
 //! hand, an open menu, titles) is reported for the manager's screen view; menu clicks go out only when the user clicks.
 
 mod classify;
 mod cli;
 mod client;
+mod commands;
 mod conn;
 mod crowd;
 mod crypto;
@@ -20,6 +21,7 @@ mod picture;
 pub mod render;
 pub mod resume;
 mod screen;
+mod signing;
 mod status;
 mod text;
 mod v777;
