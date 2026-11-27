@@ -84,7 +84,7 @@ fn read(path: &Path) -> Result<Log> {
         return Ok(Log::new());
     }
     let bytes = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let mut log: Log = serde_json::from_slice::<Vec<Entry>>(&bytes)?.into();
+    let mut log: Log = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes)?.into_iter().filter_map(|v| serde_json::from_value::<Entry>(v).ok()).collect();
     while log.len() > KEPT {
         log.pop_front();
     }
@@ -129,6 +129,15 @@ impl Writer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_entry_of_a_kind_from_a_newer_version_is_skipped_and_the_rest_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        std::fs::write(&path, br#"[{"at":1,"kind":"banned","reason":"x"},{"at":2,"kind":"teleported"},{"at":3,"kind":"connected"}]"#).unwrap();
+        let log = super::load(&path);
+        assert_eq!(log.iter().map(|e| e.at).collect::<Vec<_>>(), [1, 3]);
+    }
+
     use super::*;
 
     fn entry(n: u64) -> Entry {
