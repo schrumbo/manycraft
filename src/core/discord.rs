@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The id of the Discord application named Manycraft; while it is empty the status stays off.
-const APP_ID: &str = "";
+const APP_ID: &str = "1575795643262312518";
 
 const RETRY: Duration = Duration::from_secs(15);
 const OP_HANDSHAKE: u32 = 0;
@@ -112,7 +112,7 @@ fn handshake(stream: &mut dyn Wire, app_id: &str) -> io::Result<()> {
 
 fn activity(presence: Option<&Presence>, start: i64, pid: u32) -> String {
     let activity = presence.map(|p| {
-        let mut a = serde_json::json!({ "details": p.details, "timestamps": { "start": start } });
+        let mut a = serde_json::json!({ "details": p.details, "timestamps": { "start": start }, "assets": { "large_image": "logo", "large_text": "Manycraft" } });
         if let Some(state) = &p.state {
             a["state"] = state.clone().into();
         }
