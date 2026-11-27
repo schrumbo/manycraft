@@ -34,6 +34,7 @@ use std::sync::mpsc::Sender;
 use anyhow::Result;
 use uuid::Uuid;
 
+use super::account::Account;
 use super::auth::Session;
 use super::batch::Packs;
 use super::ipc;
@@ -55,6 +56,8 @@ pub struct Spec {
     pub uuid: Uuid,
     /// The signed-in session for online-mode servers; `None` for offline accounts.
     pub session: Option<Session>,
+    /// The Microsoft account behind `session`, which a long connection asks for a fresh session when its chat key runs out.
+    pub account: Option<Account>,
     /// The Minecraft version the batch plays, which picks the protocol.
     pub version: String,
     pub packs: Packs,

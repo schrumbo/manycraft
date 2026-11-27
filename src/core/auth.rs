@@ -144,6 +144,11 @@ impl ChatCertificate {
     pub fn is_current(&self, now: i64) -> bool {
         now < self.refresh_after.min(self.expires_at)
     }
+
+    /// How long from epoch millisecond `now` until a new key is due; zero when it already is.
+    pub fn renew_in(&self, now: i64) -> Duration {
+        Duration::from_millis(u64::try_from(self.refresh_after.min(self.expires_at) - now).unwrap_or(0))
+    }
 }
 
 /// Asks Mojang for the chat key pair of the account `token` belongs to. Errors name the status, never the key or the token.

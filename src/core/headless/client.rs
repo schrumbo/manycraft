@@ -54,6 +54,7 @@ const SHOT_RADIUS: i32 = 2;
 const SHOT_WAIT: Duration = Duration::from_secs(10);
 const QUEUED_MAX: usize = 4;
 const CERTIFICATE_TIMEOUT: Duration = Duration::from_secs(5);
+const RENEW_PAUSE: Duration = Duration::from_secs(300);
 
 static PICTURES: AtomicU32 = AtomicU32::new(0);
 static QUEUED: AtomicUsize = AtomicUsize::new(0);
@@ -239,6 +240,54 @@ impl Shared {
                 }
                 Next::Wait(wait) => return Some(wait),
                 Next::Empty => return None,
+            }
+        }
+    }
+
+    /// Keeps the chat key of a signed-in account current for as long as the connection lasts.
+    fn renew(&self, spec: &Spec) {
+        let Some(account) = &spec.account else { return };
+        self.renew_with(|| {
+            let session = crate::core::auth::session_for(account)?;
+            crate::core::auth::chat_certificate(&crate::core::net::agent_within(CERTIFICATE_TIMEOUT), &session.access_token)
+        });
+    }
+
+    /// Fetches a new key with `fetch` once the one in use is due for replacement, keeps it for reconnects and, while
+    /// signing, announces it as a new chat session as the game does. A failure keeps the old key and tries again after
+    /// [`RENEW_PAUSE`], which also bounds how often a key that is due at once is asked for.
+    fn renew_with(&self, mut fetch: impl FnMut() -> Result<ChatCertificate>) {
+        let mut not_before: Option<Instant> = None;
+        let mut link = self.lock();
+        while !link.closed {
+            let due = match (&link.signer, &link.certificate) {
+                (Some(_), Some(certificate)) => Some(certificate.renew_in(now_millis())),
+                _ => None,
+            };
+            let Some(mut wait) = due else {
+                link = self.wake.wait(link).unwrap_or_else(PoisonError::into_inner);
+                continue;
+            };
+            if let Some(at) = not_before {
+                wait = wait.max(at.saturating_duration_since(Instant::now()));
+            }
+            if !wait.is_zero() {
+                link = self.wake.wait_timeout(link, wait).unwrap_or_else(PoisonError::into_inner).0;
+                continue;
+            }
+            drop(link);
+            let fetched = fetch();
+            link = self.lock();
+            not_before = Some(Instant::now() + RENEW_PAUSE);
+            match fetched {
+                Ok(certificate) => {
+                    let certificate = Arc::new(certificate);
+                    *self.certificate.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&certificate));
+                    if let Err(e) = renew_chat_session(&mut link, certificate) {
+                        eprintln!("{}: chat key not announced: {e:#}", self.key);
+                    }
+                }
+                Err(e) => eprintln!("{}: chat key not renewed, the old one stays: {e:#}", self.key),
             }
         }
     }
@@ -442,16 +491,33 @@ fn start_chat_session(shared: &Shared, link: &mut Link) -> Result<()> {
         Ok(signer) => {
             write(link, play::serverbound::CHAT_SESSION_UPDATE, &mut signer.announcement())?;
             link.signer = Some(signer);
+            shared.wake.notify_all();
         }
         Err(e) => eprintln!("{}: chat goes out unsigned, its key is unusable: {e:#}", shared.key),
     }
     Ok(())
 }
 
+/// Announces `certificate` as a new chat session of a connection that signs, which keeps what it has seen.
+fn renew_chat_session(link: &mut Link, certificate: Arc<ChatCertificate>) -> Result<()> {
+    if link.phase != Phase::Play || link.signer.is_none() {
+        return Ok(());
+    }
+    let signer = Signer::new(&certificate, link.me)?;
+    write(link, play::serverbound::CHAT_SESSION_UPDATE, &mut signer.announcement())?;
+    link.signer = Some(signer);
+    link.certificate = Some(certificate);
+    Ok(())
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 /// The account's chat key: the one kept from an earlier connection while it is current, otherwise a fresh one from Mojang.
 /// `None` when it cannot be had, and chat then goes out unsigned.
 fn chat_certificate(shared: &Shared, spec: &Spec, session: &Session) -> Option<Arc<ChatCertificate>> {
-    let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()?;
+    let now = now_millis();
     let mut kept = shared.certificate.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(certificate) = kept.as_ref().filter(|c| c.is_current(now)) {
         return Some(Arc::clone(certificate));
@@ -470,8 +536,7 @@ fn chat_certificate(shared: &Shared, spec: &Spec, session: &Session) -> Option<A
 /// Sends what the user typed: a command when it starts with `/`, otherwise a chat message, signed when the connection has a key.
 fn chat(link: &mut Link, text: &str) -> Result<()> {
     let text = text.trim();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-    link.chat_clock = now.max(link.chat_clock + 1);
+    link.chat_clock = now_millis().max(link.chat_clock + 1);
     let mut salt = [0u8; 8];
     crypto::random(&mut salt)?;
     let mut out = Out::default();
@@ -506,6 +571,7 @@ fn chat(link: &mut Link, text: &str) -> Result<()> {
 pub fn run(shared: &Shared, spec: &Spec) {
     thread::scope(|scope| {
         scope.spawn(|| shared.pace());
+        scope.spawn(|| shared.renew(spec));
         let _closing = Closing(shared);
         keep_connected(shared, spec);
     });
@@ -1274,10 +1340,11 @@ fn bound(r: &mut In, types: &[ChatType], content: &Value, text: String) -> Resul
 
 #[cfg(test)]
 mod tests {
+    use super::super::signing::test_certificate;
     use super::*;
 
     fn shared() -> Shared {
-        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
+        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, account: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
         Shared::new(&spec, std::sync::mpsc::channel().0)
     }
 
@@ -1345,6 +1412,107 @@ mod tests {
         }
     }
 
+    fn frame(stream: &mut std::net::TcpStream) -> Option<(i32, Vec<u8>)> {
+        use std::io::Read;
+        let mut byte = [0u8; 1];
+        let mut len = 0usize;
+        for shift in (0..).step_by(7).take(5) {
+            stream.read_exact(&mut byte).ok()?;
+            len |= usize::from(byte[0] & 0x7f) << shift;
+            if byte[0] & 0x80 == 0 {
+                break;
+            }
+        }
+        let mut packet = vec![0u8; len];
+        stream.read_exact(&mut packet).ok()?;
+        let mut r = In::new(&packet);
+        let id = r.varint().ok()?;
+        let used = packet.len() - r.left();
+        Some((id, packet[used..].to_vec()))
+    }
+
+    fn playing_with_a_key(shared: &Shared, certificate: ChatCertificate) -> std::net::TcpStream {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let mut link = shared.lock();
+        link.writer = Some(Writer::new(client));
+        link.phase = Phase::Play;
+        let certificate = Arc::new(certificate);
+        link.signer = Some(Signer::new(&certificate, link.me).unwrap());
+        link.certificate = Some(certificate);
+        server
+    }
+
+    #[test]
+    fn a_chat_key_that_runs_out_is_replaced_and_announced_as_a_new_session_while_the_connection_stays() {
+        let shared = shared();
+        let now = now_millis();
+        let mut server = playing_with_a_key(&shared, test_certificate(1, now + 400, now + 5_000));
+        server.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let old = shared.lock().signer.as_ref().unwrap().announcement().0.clone();
+        shared.lock().seen.add([7; 256]);
+        let started = Instant::now();
+        let mut fetched = 0;
+        let sent = thread::scope(|scope| {
+            scope.spawn(|| {
+                shared.renew_with(|| {
+                    fetched += 1;
+                    Ok(test_certificate(2, now_millis() + 3_600_000, now_millis() + 7_200_000))
+                })
+            });
+            let sent = frame(&mut server);
+            let mut link = shared.lock();
+            link.closed = true;
+            shared.wake.notify_all();
+            sent
+        });
+        let (id, body) = sent.expect("a session update");
+        assert_eq!(id, play::serverbound::CHAT_SESSION_UPDATE);
+        assert!(started.elapsed() >= Duration::from_millis(350), "not before the key is due");
+        assert_eq!(fetched, 1);
+        assert_ne!(body[..16], old[..16], "a new session id");
+        assert_eq!(body, shared.lock().signer.as_ref().unwrap().announcement().0);
+        assert_eq!(shared.lock().seen.offset(), 1, "what was seen stays");
+        assert_eq!(shared.certificate.lock().unwrap().as_ref().unwrap().public_key, vec![2; 8], "kept for a reconnect");
+        assert_eq!(shared.lock().certificate.as_ref().unwrap().public_key, vec![2; 8]);
+    }
+
+    #[test]
+    fn a_chat_key_that_cannot_be_renewed_leaves_the_old_one_signing() {
+        let shared = shared();
+        let now = now_millis();
+        let mut server = playing_with_a_key(&shared, test_certificate(1, now - 1, now + 5_000));
+        server.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let old = shared.lock().signer.as_ref().unwrap().announcement().0.clone();
+        let (asked, was_asked) = std::sync::mpsc::channel();
+        let sent = thread::scope(|scope| {
+            scope.spawn(|| {
+                shared.renew_with(|| {
+                    asked.send(()).unwrap();
+                    bail!("services are down")
+                })
+            });
+            was_asked.recv_timeout(Duration::from_secs(20)).expect("it asks");
+            let sent = frame(&mut server);
+            let mut link = shared.lock();
+            link.closed = true;
+            shared.wake.notify_all();
+            sent
+        });
+        assert!(sent.is_none());
+        assert_eq!(old, shared.lock().signer.as_ref().unwrap().announcement().0);
+    }
+
+    #[test]
+    fn a_connection_that_does_not_sign_has_no_key_to_renew() {
+        let shared = shared();
+        let mut link = shared.lock();
+        link.phase = Phase::Play;
+        assert!(renew_chat_session(&mut link, Arc::new(test_certificate(1, 0, 0))).is_ok());
+        assert!(link.signer.is_none());
+    }
+
     #[test]
     fn a_pack_is_answered_without_downloading_it_in_the_order_the_game_answers() {
         let id = Uuid::from_u128(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
@@ -1389,7 +1557,7 @@ mod tests {
     fn a_change_of_world_takes_one_screenshot_once_the_player_stands_in_it() {
         use play::clientbound as p;
         let (tx, rx) = std::sync::mpsc::channel();
-        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
+        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, account: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
         let shared = Shared::new(&spec, tx);
         let mut link = shared.lock();
         link.phase = Phase::Play;

@@ -1746,7 +1746,8 @@ fn connect_one(target: &Target, account: &Account, key: &str, events: &Sender<ip
     };
     let address = target.join().context("no server")?.to_owned();
     let conduct = target.batch.as_ref().map(|b| b.conduct_hashes(&address)).unwrap_or_default();
-    let spec = headless::Spec { key: key.to_owned(), address, name: account.name.clone(), uuid: account.id, session, version: target.instance.game_version.clone(), packs: target.packs(), proxy, conduct };
+    let renewing = session.is_some().then(|| account.clone());
+    let spec = headless::Spec { key: key.to_owned(), address, name: account.name.clone(), uuid: account.id, session, account: renewing, version: target.instance.game_version.clone(), packs: target.packs(), proxy, conduct };
     match headless::start(spec, events.clone()) {
         Ok(connection) => Ok(Box::new(Linked::new(connection))),
         Err(e) => Err(match e.downcast_ref::<headless::Refused>() {

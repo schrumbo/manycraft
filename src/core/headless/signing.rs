@@ -131,32 +131,7 @@ impl Signer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use sha2::{Digest, Sha256};
-
-    fn signature(seed: u8) -> Signature {
-        std::array::from_fn(|i| seed.wrapping_mul(31).wrapping_add((i as u8).wrapping_mul(7)))
-    }
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    const SENDER: u128 = 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10;
-    const SESSION: u128 = 0x1112_1314_1516_1718_191a_1b1c_1d1e_1f20;
-    const SALT: [u8; 8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
-
-    #[test]
-    fn the_signed_bytes_and_checksums_are_the_ones_the_game_makes() {
-        let make = |seen: &[Signature]| payload(Uuid::from_u128(SENDER), Uuid::from_u128(SESSION), 3, SALT, 1_796_119_200_123, "hello wörld", seen);
-        assert_eq!(hex(&make(&[])), "000000010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20000000031122334455667788000000006b0e9aa00000000c68656c6c6f2077c3b6726c6400000000");
-        assert_eq!(hex(&Sha256::digest(make(&[signature(1), signature(2)]))), "eb0435dd3fe04881d6cca9368d1c7bb788360567864ec5a0dccda0011ba75f82");
-        assert_eq!(checksum(&[]), 1);
-        assert_eq!(checksum(&[signature(1), signature(2)]), (-31i8) as u8);
-    }
-
-    const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----
+pub(super) const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCfkXywqAbUe07p
 hWzTIUS0AHAPD0O2yYPwuMo9N/mQz01O0QvwBMz1tmri690YqZKqcQEXo+o88ogU
 5Om8jCUTwxzL5A4pJ4erjbuVwBwXlHZGtbwS9HEoN5gNSiW1HhcvqowcYKNxR0c5
@@ -184,6 +159,37 @@ x6HNpu8LNvYJOuy1PgUyLX/MdIxHc1tY7FG/FIWRGwqufLMEH1pgo+mqvgjgc25v
 J0zMk+otOTJJmEn0aID91LvMX0ePRqqjrqkwqvxHlos6IN5slAaN3rgJ6Um05KRM
 R5Kiau6Idmd077IA6MLGdPk=
 -----END PRIVATE KEY-----";
+
+#[cfg(test)]
+pub(super) fn test_certificate(public: u8, refresh_after: i64, expires_at: i64) -> ChatCertificate {
+    ChatCertificate { private_key: TEST_KEY.into(), public_key: vec![public; 8], signature: vec![public; 4], expires_at, refresh_after }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn signature(seed: u8) -> Signature {
+        std::array::from_fn(|i| seed.wrapping_mul(31).wrapping_add((i as u8).wrapping_mul(7)))
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    const SENDER: u128 = 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10;
+    const SESSION: u128 = 0x1112_1314_1516_1718_191a_1b1c_1d1e_1f20;
+    const SALT: [u8; 8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+
+    #[test]
+    fn the_signed_bytes_and_checksums_are_the_ones_the_game_makes() {
+        let make = |seen: &[Signature]| payload(Uuid::from_u128(SENDER), Uuid::from_u128(SESSION), 3, SALT, 1_796_119_200_123, "hello wörld", seen);
+        assert_eq!(hex(&make(&[])), "000000010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20000000031122334455667788000000006b0e9aa00000000c68656c6c6f2077c3b6726c6400000000");
+        assert_eq!(hex(&Sha256::digest(make(&[signature(1), signature(2)]))), "eb0435dd3fe04881d6cca9368d1c7bb788360567864ec5a0dccda0011ba75f82");
+        assert_eq!(checksum(&[]), 1);
+        assert_eq!(checksum(&[signature(1), signature(2)]), (-31i8) as u8);
+    }
 
     fn test_signer() -> Signer {
         let public = hex_bytes("30820122300d06092a864886f70d01010105000382010f003082010a02820101009f917cb0a806d47b4ee9856cd32144b400700f0f43b6c983f0b8ca3d37f990cf4d4ed10bf004ccf5b66ae2ebdd18a992aa710117a3ea3cf28814e4e9bc8c2513c31ccbe40e292787ab8dbb95c01c17947646b5bc12f4712837980d4a25b51e172faa8c1c60a37147473912c0c9abc1ff9841cc88dae6e646a16ecdc237460b8dca61167bd169ac98255822770d0539329f6975f25eecf56d850fe0c76fbcbc6170a203aa2e6778052395581b5d70ce7a3597a12b6339edf1ef4659c62b7c46ce4d0afa326c00dcf13d69805c753c57387b5668ab2b01501a1ba188ccf9e83d9b5e43e15bf40261791bb28f28462d16e61ed02f008fab29a017e294f59412f1cb0203010001");
