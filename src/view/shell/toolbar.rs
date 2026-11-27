@@ -29,7 +29,7 @@ impl Component for Toolbar {
             Page::Library => (tr("Instanzen"), (!m.instances.is_empty()).then(|| if m.instances.len() == 1 { tr("1 Instanz") } else { trf("%lld Instanzen", &[&m.instances.len()]) })),
             Page::Discover => (tr("Entdecken"), Some(if ui.discover.read().kind == crate::core::modrinth::Kind::Modpack { tr("Von Modrinth, jedes Modpack wird eine eigene Instanz") } else { tr("Von Modrinth") })),
             Page::Wardrobe => (tr("Garderobe"), Some(tr("Skins und Umhänge"))),
-            Page::Sync => (tr("Sync"), Some(crate::view::sync::count_line(&m))),
+            Page::Sync => (tr("Sync"), None),
             Page::Grid(filter) => {
                 let name = match filter {
                     Filter::All => tr("Batches"),

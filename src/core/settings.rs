@@ -145,9 +145,6 @@ pub struct Settings {
     pub merged_chat: bool,
     /// Whether the Chat page can send a line to one instance or a whole batch.
     pub broadcast: bool,
-    /// Whether an instance made from now on syncs its settings with the others.
-    #[serde(skip_serializing_if = "is_true")]
-    pub sync_new: bool,
     pub notifications: Notifications,
     /// Whether attention also goes to the phone, and how.
     pub phone: phone::Phone,
@@ -194,7 +191,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, sync_new: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, while_playing: WhilePlaying::Minimize, reopen_after: true, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, system_frame: false, kept: serde_json::Map::new() }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, while_playing: WhilePlaying::Minimize, reopen_after: true, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, system_frame: false, kept: serde_json::Map::new() }
     }
 }
 

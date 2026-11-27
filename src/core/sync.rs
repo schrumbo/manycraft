@@ -191,7 +191,7 @@ pub(crate) fn instance_options(roots: &Roots, peers: &impl Peers, instance: &str
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", template.display())),
         };
-        let shares = share::flags_in(&dir).options;
+        let shares = share::flags_in(&roots.mother, &dir).options;
         let start = if shares { share::options_for(&roots.mother, &dir)? } else { text.clone() };
         let changes = changed(start.as_deref(), values);
         let kept: BTreeMap<String, String> = changes.iter().filter(|(k, _)| !shares || share::kept_apart(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -223,8 +223,7 @@ fn servers_saved(roots: &Roots, peers: &impl Peers, key: &str) -> Result<()> {
     instance_servers(roots, peers, &instance, &bytes, Some(key))
 }
 
-/// Makes `bytes` the server list of `instance` and of its running games but `except`, and tells those games. An instance
-/// sharing its list keeps none of its own; the sync folder takes it on its own way.
+/// Makes `bytes` the server list of `instance` and of its running games but `except`, and tells those games.
 pub(crate) fn instance_servers(roots: &Roots, peers: &impl Peers, instance: &str, bytes: &[u8], except: Option<&str>) -> Result<()> {
     let targets: Vec<String> = in_instance(peers, instance).into_iter().filter(|k| Some(k.as_str()) != except).collect();
     {
@@ -232,9 +231,7 @@ pub(crate) fn instance_servers(roots: &Roots, peers: &impl Peers, instance: &str
         if !roots.instance(instance).is_dir() {
             return Ok(());
         }
-        if !share::flags_in(&roots.instance(instance)).servers {
-            net::write_atomic(&roots.instance(instance).join(SERVERS_FILE), bytes)?;
-        }
+        net::write_atomic(&roots.instance(instance).join(SERVERS_FILE), bytes)?;
         for other in &targets {
             if let Some((_, account)) = game_of(peers, other) {
                 let _ = net::write_atomic(&roots.game(instance, &account).join(SERVERS_FILE), bytes);

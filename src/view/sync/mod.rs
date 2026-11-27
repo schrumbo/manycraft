@@ -1,22 +1,14 @@
-//! Sync: the one page where keeping game options, mod settings and the server list the same across instances is set up
-//! and seen: a setup that picks the base and the instances to bring in line, what each item stands on, and each instance.
+//! Sync: the one page where keeping game options, mod settings, worlds and screenshots the same across instances is
+//! set up once and then switched on and off per kind.
 
-mod instances;
-mod kinds;
 mod setup;
-pub(crate) mod words;
 
 use freya::prelude::*;
 
-use self::instances::InstancesBlock;
-use self::kinds::KindsBlock;
 use self::setup::SetupPanel;
-use crate::app::event::Event as AppEvent;
-use crate::app::model::Model;
-use crate::core::i18n::{tr, trf};
-use crate::core::share::{self, ITEMS, Item, Note, Sharing, Standing, Summary, Version};
+use crate::core::i18n::tr;
+use crate::core::share::{self, KINDS, Kind, State as Shared};
 use crate::ui::forms;
-use crate::view::kit::button::Button;
 use crate::view::kit::group::{Line, group};
 use crate::view::kit::switch::Switch;
 use crate::view::kit::{off_ui, page, toast, use_theme};
@@ -24,42 +16,21 @@ use crate::view::library;
 use crate::view::store::{Store, use_store};
 
 #[derive(Clone, PartialEq)]
-pub(crate) struct Loaded {
-    pub standing: Vec<Standing>,
-    pub versions: Vec<(Item, Option<Vec<Version>>)>,
-    pub notes: Vec<Note>,
-    pub last: Option<Summary>,
-}
-
-impl Loaded {
-    fn read() -> Self {
-        Self { standing: share::standing(), versions: ITEMS.into_iter().map(|i| (i, share::versions(i).ok())).collect(), notes: share::notes(), last: share::last_setup() }
-    }
-}
-
-#[derive(Clone, PartialEq)]
 pub(crate) struct Who {
     pub id: String,
     pub name: String,
     pub version: String,
-    pub sync: Sharing,
     pub running: bool,
 }
 
-pub(crate) fn whos(m: &Model) -> Vec<Who> {
-    let mut all: Vec<Who> = m.instances.iter().map(|i| Who { id: i.id.clone(), name: i.name.clone(), version: i.game_version.clone(), sync: i.sync, running: m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active()) }).collect();
+pub(crate) fn whos(m: &crate::app::model::Model) -> Vec<Who> {
+    let mut all: Vec<Who> = m.instances.iter().map(|i| Who { id: i.id.clone(), name: i.name.clone(), version: i.game_version.clone(), running: m.games.values().any(|g| g.instance_id == i.id && g.phase.is_active()) }).collect();
     all.sort_by_cached_key(|w| w.name.to_lowercase());
     all
 }
 
-/// "3 von 4 Instanzen synchronisieren" for the toolbar.
-pub fn count_line(m: &Model) -> String {
-    let all = whos(m);
-    if all.is_empty() {
-        return tr("Noch keine Instanzen");
-    }
-    let on = all.iter().filter(|w| w.sync.any()).count();
-    trf("%lld von %lld Instanzen synchronisieren", &[&on, &all.len()])
+pub(crate) fn running(who: &[Who]) -> Vec<String> {
+    who.iter().filter(|w| w.running).map(|w| w.id.clone()).collect()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -85,47 +56,22 @@ impl Ctx {
     }
 }
 
-pub(crate) fn switch(ctx: Ctx, id: String, before: Sharing, next: Sharing, running: bool, then: impl FnOnce(bool) + 'static) {
-    let store = ctx.store;
-    spawn_in_window(async move {
-        let target = id.clone();
-        let ok = match off_ui(move || share::set(&target, next, running)).await {
-            Some(Ok(saved)) => {
-                store.dispatch(AppEvent::InstanceChanged(saved));
-                let undo = EventHandler::new(move |_| {
-                    let id = id.clone();
-                    spawn_in_window(async move {
-                        match off_ui(move || share::set(&id, before, running)).await {
-                            Some(Ok(saved)) => {
-                                store.dispatch(AppEvent::InstanceChanged(saved));
-                                ctx.refresh();
-                            }
-                            Some(Err(e)) => ctx.failed(tr("Nicht zurückgenommen."), &e),
-                            None => ctx.unexplained(),
-                        }
-                    });
-                });
-                let text = match (next.any(), running) {
-                    (true, true) => tr("Ab dem nächsten Start synchronisiert."),
-                    (false, true) => tr("Eigene Dateien ab dem nächsten Start."),
-                    (true, false) => tr("Synchronisiert."),
-                    (false, false) => tr("Eigene Dateien, nicht mehr synchronisiert."),
-                };
-                let _ = toast::show(store.ui, text, Some(undo));
-                true
-            }
-            Some(Err(e)) => {
-                ctx.failed(tr("Nicht umgestellt."), &e);
-                false
-            }
-            None => {
-                ctx.unexplained();
-                false
-            }
-        };
-        ctx.refresh();
-        then(ok);
-    });
+fn label(kind: Kind) -> String {
+    match kind {
+        Kind::Options => tr("Spiel-Optionen"),
+        Kind::Config => tr("Mod-Einstellungen"),
+        Kind::Saves => tr("Welten"),
+        Kind::Screenshots => tr("Screenshots"),
+    }
+}
+
+fn blurb(kind: Kind) -> String {
+    match kind {
+        Kind::Options => tr("Grafik, Steuerung, Ton und alles andere aus „options.txt“."),
+        Kind::Config => tr("Der Ordner „config“ der Mods."),
+        Kind::Saves => tr("Alle Singleplayer-Welten, in jeder Instanz dieselben."),
+        Kind::Screenshots => tr("Alle Screenshots an einem Ort."),
+    }
 }
 
 /// The Sync page.
@@ -139,14 +85,13 @@ impl Component for SyncPage {
         library::use_infos(store);
         let scroll = use_scroll_controller(ScrollConfig::default);
         let asked = use_state(|| 0u32);
-        let mut loaded = use_state(|| None::<Loaded>);
-        let mut open = use_state(|| false);
-        let mut only = use_state(|| None::<Item>);
+        let mut loaded = use_state(|| None::<Shared>);
+        let mut busy = use_state(|| false);
         let ctx = Ctx { store, asked };
         use_side_effect(move || {
             let _ = asked.read();
             spawn_in_window(async move {
-                let found = off_ui(Loaded::read).await;
+                let found = off_ui(share::state).await;
                 if loaded.try_peek().is_some()
                     && let Some(found) = found
                 {
@@ -156,67 +101,64 @@ impl Component for SyncPage {
         });
         let who = whos(&store.model.read());
         let mut col = page::column();
-        let Some(read) = loaded.read().clone() else { return page::scrolling(scroll, col) };
+        let Some(state) = loaded.read().clone() else { return page::scrolling(scroll, col) };
         if who.is_empty() {
-            col = col.child(group(&t, None, vec![Line::new("sync.none", tr("Noch keine Instanzen")).hint(tr("Sync beginnt mit der ersten Instanz. Neue Instanzen synchronisieren automatisch.")).into_element()], None));
-            return page::scrolling(scroll, col.child(auto_block(ctx)));
+            let line = Line::new("sync.none", tr("Noch keine Instanzen")).hint(tr("Lege eine Instanz an, dann kannst du hier Sync einrichten."));
+            return page::scrolling(scroll, col.child(group(&t, None, vec![line.into_element()], None)));
         }
-        let set_up = who.iter().any(|w| w.sync.any()) || read.standing.iter().any(|s| s.present);
-        if set_up {
-            let mut lines = Vec::new();
-            let undone = read.last.as_ref().is_none_or(|l| l.undone);
-            let hint = match &read.last {
-                Some(l) if !l.undone => trf("Zuletzt eingerichtet: Basis „%@“, %@, %lld Instanzen.", &[&l.base, &words::when(l.at), &l.instances]),
-                _ => tr("Wähle eine Basis und bring weitere Instanzen auf ihren Stand. Was sie vorher hatten, liegt im Verlauf."),
-            };
-            let shown = *open.read();
-            let toggle = Button::new("sync.setup.toggle", if shown { tr("Schließen") } else { tr("Neu einrichten …") }).on_press(move |_| {
-                only.set(None);
-                open.set(!shown);
-            });
-            let mut controls = rect().horizontal().spacing(crate::view::theme::space::S);
-            if !undone {
-                controls = controls.child(Button::new("sync.setup.undo", tr("Rückgängig")).plain().on_press(move |_| setup::undo(ctx)));
-            }
-            lines.push(Line::new("sync.setup", tr("Einrichten")).hint(hint).control(controls.child(toggle)).into_element());
-            col = col.child(group(&t, None, lines, None));
-            if *open.read() {
-                col = col.child(rect().key(format!("{:?}", *only.read())).width(Size::fill()).child(SetupPanel { ctx, who: who.clone(), only: *only.read(), standing: read.standing.clone(), on_done: EventHandler::new(move |_| open.set(false)) }));
-            }
-            let change = EventHandler::new(move |item| {
-                only.set(Some(item));
-                open.set(true);
-            });
-            col = col.child(KindsBlock { ctx, loaded: read.clone(), who: who.clone(), change }).child(InstancesBlock { ctx, who }).child(auto_block(ctx));
-        } else {
-            col = col.child(group(&t, Some(tr("So funktioniert Sync")), vec![Line::new("sync.how", tr("Eine Basis, alle gleich")).hint(tr("Du wählst eine Instanz, deren Spiel-Optionen, Mod-Einstellungen und Serverliste die gemeinsamen werden. Die anderen Instanzen übernehmen sie; was sie vorher hatten, bleibt im Verlauf. Neue Instanzen synchronisieren automatisch.")).into_element()], None));
-            col = col.child(SetupPanel { ctx, who, only: None, standing: read.standing.clone(), on_done: EventHandler::new(|_| {}) }).child(auto_block(ctx));
+        if !state.on {
+            col = col.child(group(&t, Some(tr("So funktioniert Sync")), vec![Line::new("sync.how", tr("Eine Vorlage, alle gleich")).hint(tr("Du wählst eine Instanz als Vorlage. Ihre Spiel-Optionen, Mod-Einstellungen, Welten und Screenshots werden die gemeinsamen, und alle Instanzen nutzen sie, auch neue. Die eigenen Dateien der Instanzen bleiben als „….before-sync“ neben den Ordnern liegen.")).into_element()], None));
+            return page::scrolling(scroll, col.child(SetupPanel { ctx, who }));
         }
-        page::scrolling(scroll, col)
+        let running = running(&who);
+        let any_running = !running.is_empty();
+        let mut change = move |kind: Option<Kind>, on: bool| {
+            if *busy.peek() {
+                return;
+            }
+            busy.set(true);
+            let running = running.clone();
+            spawn_in_window(async move {
+                let done = off_ui(move || match kind {
+                    Some(kind) => share::set_kind(kind, on, &running),
+                    None => share::turn_off(&running),
+                })
+                .await;
+                match done {
+                    Some(Ok(())) => {}
+                    Some(Err(e)) => ctx.failed(tr("Nicht umgestellt."), &e),
+                    None => ctx.unexplained(),
+                }
+                if busy.try_peek().is_some() {
+                    busy.set(false);
+                }
+                ctx.refresh();
+            });
+        };
+        let working = *busy.read();
+        let master_hint = if working { tr("Wird umgestellt …") } else { tr("Alle Instanzen nutzen, was unten eingeschaltet ist. Eine einzelne Instanz kann in ihren Einstellungen aussteigen.") };
+        let mut off = change.clone();
+        let mut off_press = change.clone();
+        let master = Line::new("sync.master", tr("Sync")).hint(master_hint).control(Switch::new("sync.master.switch", tr("Sync"), true).on_toggle(move |_| off(None, false))).on_press(move |_| off_press(None, false));
+        col = col.child(group(&t, None, vec![master.into_element()], if any_running { Some(tr("Ein Spiel läuft. Änderungen gelten für die Instanz ab ihrem nächsten Start.")) } else { None }));
+        let rows: Vec<Element> = KINDS
+            .into_iter()
+            .map(|kind| {
+                let on = state.get(kind);
+                let mut flip = change.clone();
+                let mut press = change.clone();
+                Line::new(format!("sync.kind.{}", kind_key(kind)), label(kind)).hint(blurb(kind)).control(Switch::new(format!("sync.kind.{}.switch", kind_key(kind)), label(kind), on).on_toggle(move |want| flip(Some(kind), want))).on_press(move |_| press(Some(kind), !on)).into_element()
+            })
+            .collect();
+        page::scrolling(scroll, col.child(group(&t, Some(tr("Was synchronisiert wird")), rows, Some(tr("Ausgeschaltet bekommt jede Instanz wieder eine eigene Kopie des gemeinsamen Stands.")))))
     }
 }
 
-fn auto_block(ctx: Ctx) -> Element {
-    AutoBlock { ctx }.into_element()
-}
-
-#[derive(PartialEq)]
-struct AutoBlock {
-    ctx: Ctx,
-}
-
-impl Component for AutoBlock {
-    fn render(&self) -> impl IntoElement {
-        let t = use_theme();
-        let store = self.ctx.store;
-        let mut on = use_state(|| crate::core::settings::active().sync_new);
-        let mut set = move |want: bool| {
-            on.set(want);
-            crate::core::settings::update(|s| s.sync_new = want);
-            crate::view::settings::save(store);
-        };
-        let now = *on.read();
-        let hint = if now { tr("Jede neue Instanz startet mit Sync an. Ihre erste Datei geht dann in den Verlauf, ersetzt wird beim ersten Start.") } else { tr("Neue Instanzen beginnen mit eigenen Dateien. Du kannst Sync pro Instanz einschalten.") };
-        group(&t, None, vec![Line::new("sync.auto.row", tr("Neue Instanzen synchronisieren automatisch")).hint(hint).control(Switch::new("sync.auto", tr("Neue Instanzen synchronisieren automatisch"), now).on_toggle(set)).on_press(move |_| set(!now)).into_element()], None)
+fn kind_key(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Options => "options",
+        Kind::Config => "config",
+        Kind::Saves => "saves",
+        Kind::Screenshots => "screenshots",
     }
 }

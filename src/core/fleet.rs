@@ -27,7 +27,7 @@ use super::launch::{self, LaunchSpec};
 use super::options::LaunchOptions;
 use super::proxy::{self, Kind};
 use super::share;
-use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS};
+use super::sync::{self, OPTIONS_FILE, PER_INSTANCE_KEYS, SERVERS_FILE};
 use super::vault::{self, Vault};
 use super::{adopt, auth, gpu, headless, ipc, javas, lock, net, paths, scrub, stagger};
 
@@ -182,7 +182,6 @@ struct Shared {
     options: PathBuf,
     shared_options: Option<PathBuf>,
     servers: PathBuf,
-    shared_servers: bool,
     saves: PathBuf,
 }
 
@@ -195,9 +194,8 @@ impl Shared {
             shaderpacks: instance.shaderpacks_dir(),
             datapacks: instance.datapacks_dir(),
             options: instance.options_template(),
-            shared_options: share::flags_in(&instance.dir()).options.then(|| share::Mother::current().path(OPTIONS_FILE)),
-            servers: share::game_servers(&instance.dir()),
-            shared_servers: share::flags_in(&instance.dir()).servers,
+            shared_options: share::flags(&instance.dir()).options.then(|| share::Mother::current().path(OPTIONS_FILE)),
+            servers: instance.dir().join(SERVERS_FILE),
             saves: instance.dir().join(super::launchers::SAVES_SEED),
         }
     }
@@ -209,6 +207,7 @@ pub fn prepare(instance: &Instance, account: &Account) -> Result<PathBuf> {
     instance::existing(&instance.id)?;
     let dir = instance.game_dir(account.id);
     prepare_in(&dir, &Shared::of(instance), &instance.other_games(account.id))?;
+    share::settle_game(instance, &dir)?;
     Ok(dir)
 }
 
@@ -255,7 +254,7 @@ fn prepare_in(dir: &Path, shared: &Shared, siblings: &[PathBuf]) -> Result<()> {
         sync::adopt_options(&shared.options, dir, siblings)?;
     }
     copy_options(share::compose(&shared.options, shared.shared_options.as_deref())?.as_deref(), &dir.join(OPTIONS_FILE))?;
-    sync::copy_servers(&shared.servers, dir, siblings, !shared.shared_servers)?;
+    sync::copy_servers(&shared.servers, dir, siblings, true)?;
     adopt_saves(&shared.saves, dir)
 }
 
@@ -1174,7 +1173,7 @@ impl Fleet {
             return self.prepare_connection(target, accounts);
         }
         let _hold = instance::hold(&instance.id).with_context(|| super::i18n::tr("Die Instanz wird gerade umbenannt oder zurückgesetzt. Versuch es gleich noch einmal."))?;
-        self.settle_exits(share::flags_in(&share::Own::of(instance).dir).any());
+        self.settle_exits(share::flags(&instance.dir()).options);
         let joining = self.instance_runs(&instance.id);
         share::inbound(instance, joining)?;
         if !joining {
@@ -2202,7 +2201,6 @@ mod tests {
             options: batch.join(OPTIONS_FILE),
             shared_options: None,
             servers: batch.join(sync::SERVERS_FILE),
-            shared_servers: false,
             saves: batch.join(super::super::launchers::SAVES_SEED),
         };
         Dirs { inst: base.join("inst"), mods: shared.mods.clone(), config: shared.config.clone(), template: shared.options.clone(), shared, _root: root }
