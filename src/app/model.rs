@@ -630,6 +630,26 @@ impl Model {
         self.instances.iter().find(|i| i.id == id)
     }
 
+    /// The running games as the Discord status names them.
+    pub fn discord_games(&self) -> Vec<crate::core::discord::Running> {
+        self.games
+            .values()
+            .filter(|g| g.counts_as_running())
+            .map(|g| {
+                let batch = self.batch(&g.batch_id);
+                let instance = if batch.is_some() { self.instance_of(&g.batch_id) } else { self.instance(&g.instance_id) };
+                crate::core::discord::Running {
+                    batch_id: if batch.is_some() { g.batch_id.clone() } else { String::new() },
+                    batch_name: batch.map(|b| b.name.clone()).unwrap_or_default(),
+                    instance_id: g.instance_id.clone(),
+                    instance_name: instance.map(|i| i.name.clone()).unwrap_or_default(),
+                    version: instance.map(|i| i.game_version.clone()).or_else(|| batch.map(|b| b.headless_version.clone())).unwrap_or_default(),
+                    loader: instance.map(|i| i.loader.name().to_owned()).unwrap_or_default(),
+                }
+            })
+            .collect()
+    }
+
     /// The instance batch `id` plays.
     pub fn instance_of(&self, batch_id: &str) -> Option<&Instance> {
         self.batch(batch_id).and_then(|b| self.instance(b.instance()?))
@@ -919,6 +939,17 @@ mod tests {
 
     fn instance(key: &str, name: &str, batch: &str, phase: Phase) -> Game {
         Game { phase, ..Game::new(key.into(), batch.into(), batch.into(), Uuid::nil(), name.into()) }
+    }
+
+    #[test]
+    fn a_game_played_alone_is_named_by_its_instance_for_discord() {
+        let mut m = Model::default();
+        m.instances.push(serde_json::from_str(r#"{"id":"i","name":"Survival","game_version":"1.21.4"}"#).unwrap());
+        let mut game = instance("1", "bob", &fleet::solo_owner("i"), Phase::Menu);
+        game.instance_id = "i".into();
+        m.games.insert(game.key.clone(), game);
+        let shown = crate::core::discord::choose(&m.discord_games()).unwrap();
+        assert_eq!(shown.details, "Playing Survival");
     }
 
     #[test]

@@ -96,6 +96,7 @@ impl Prefs {
         }
         let badge = next.game_badge != before.game_badge;
         let sleep = next.prevent_sleep != before.prevent_sleep;
+        let status = next.discord_status != before.discord_status;
         let rate = next.preview_rate != before.preview_rate;
         let recheck = (next.auto_update && !before.auto_update) || next.prereleases != before.prereleases;
         if badge {
@@ -106,6 +107,9 @@ impl Prefs {
         }
         if sleep {
             self.store.keep_awake();
+        }
+        if status {
+            self.store.show_status();
         }
         if recheck {
             updates::check(self.store, false);
@@ -227,6 +231,7 @@ impl Component for SettingsPage {
                     while_playing(p, s.while_playing),
                     toggle(p, "settings.reopen", tr("Danach wieder öffnen"), tr("Holt Manycraft zurück, sobald das letzte Spiel endet, das du allein gespielt hast."), s.reopen_after, |s, on| s.reopen_after = on),
                     toggle(p, "settings.badge", tr("Namensschild im Spiel"), tr("Zeigt oben links im Spiel, welcher Account es ist. F1 blendet es mit aus."), s.game_badge, |s, on| s.game_badge = on),
+                    toggle(p, "settings.discord", tr("Discord-Status zeigen"), tr("Zeigt in Discord, was du gerade spielst. Nur solange Spiele laufen."), s.discord_status, |s, on| s.discord_status = on),
                 ],
                 None,
             ),
