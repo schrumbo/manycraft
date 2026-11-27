@@ -20,6 +20,7 @@ pub mod compat;
 pub mod content;
 #[cfg(test)]
 mod downgrade;
+pub mod discord;
 #[allow(dead_code)]
 pub mod drive;
 pub mod drive_link;

@@ -157,6 +157,9 @@ pub struct Settings {
     pub game_badge: bool,
     /// Whether the computer is kept from sleeping on its own while a game runs.
     pub prevent_sleep: bool,
+    /// Whether Discord shows what runs while games play.
+    #[serde(skip_serializing_if = "is_true")]
+    pub discord_status: bool,
     /// Whether the hint that closing the window keeps Manycraft in the notification area was seen.
     pub tray_explained: bool,
     /// What the manager window does while a game plays alone; it stays as it is while a batch runs.
@@ -191,7 +194,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, tray_explained: false, while_playing: WhilePlaying::Minimize, reopen_after: true, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, system_frame: false, kept: serde_json::Map::new() }
+        Self { reconnect: Reconnect::default(), crash_restart: CrashRestart::default(), merged_chat: true, broadcast: true, notifications: Notifications::default(), phone: phone::Phone::default(), auto_update: true, prereleases: false, game_badge: true, prevent_sleep: true, discord_status: true, tray_explained: false, while_playing: WhilePlaying::Minimize, reopen_after: true, swap_explained: false, appearance: Appearance::System, theme: None, preview_rate: PreviewRate::Normal, all_versions: false, active_account: None, game: Game::default(), language: None, system_frame: false, kept: serde_json::Map::new() }
     }
 }
 

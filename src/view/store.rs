@@ -23,7 +23,7 @@ use crate::app::event::Event;
 use crate::app::model::{Model, Phase};
 use crate::app::reduce::reduce;
 use crate::core::i18n::{tr, trf};
-use crate::core::{awake, drive, fit, game_window, phone, settings};
+use crate::core::{awake, discord, drive, fit, game_window, phone, settings};
 use crate::runner::{self, Pixels, Runtime, Update};
 use crate::ui::route::{self, Route};
 
@@ -503,6 +503,15 @@ impl Store {
         }
     }
 
+    /// Shows in Discord what runs, as far as the setting allows; none clears it.
+    pub fn show_status(self) {
+        if !discord::available() {
+            return;
+        }
+        let shown = settings::active().discord_status.then(|| discord::choose(&self.model.peek().discord_games())).flatten();
+        discord::set(shown);
+    }
+
     /// Keeps the computer awake while games run and shows on the app icon how many accounts need attention.
     fn follow_model(self) {
         let (busy, attention) = {
@@ -510,6 +519,7 @@ impl Store {
             (m.games.values().any(|g| g.phase.is_active()), m.attention_count(None))
         };
         awake::set(awake::wanted(settings::active().prevent_sleep, busy));
+        self.show_status();
         let side = self.side();
         let mut side = side.borrow_mut();
         if side.badge != attention {
@@ -789,6 +799,7 @@ impl Store {
     /// Ends or leaves the games as the user chose, at the end of the run.
     pub fn close(self) {
         awake::set(false);
+        discord::set(None);
         if let Some(rt) = self.runtime() {
             let rt = rt.borrow();
             match rt.close() {
