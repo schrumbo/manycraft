@@ -156,15 +156,23 @@ mod tests {
         }
     }
 
+    fn borrows(args: &str, name: &str) -> bool {
+        ["peek()", "read()"].iter().any(|call| {
+            let needle = format!("{name}.{call}");
+            args.match_indices(&needle).any(|(at, _)| !args[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.'))
+        })
+    }
+
     fn writes_while_reading(line: &str) -> Option<String> {
+        let identifier = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
         for opener in ["put(", ".set(", ".set_if_modified("] {
             let mut rest = line;
             while let Some(at) = rest.find(opener) {
                 let (before, after) = (&rest[..at], &rest[at + opener.len()..]);
-                let name = if opener == "put(" {
+                let name: String = if opener == "put(" {
                     after.split(',').next().unwrap_or_default().trim().to_owned()
                 } else {
-                    before.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<Vec<_>>().into_iter().rev().collect()
+                    before.chars().rev().take_while(|c| identifier(*c)).collect::<Vec<_>>().into_iter().rev().collect()
                 };
                 let mut depth = 0;
                 let args: String = after
@@ -174,8 +182,7 @@ mod tests {
                         depth >= 0
                     })
                     .collect();
-                let named = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
-                if named && (args.contains(&format!("{name}.peek()")) || args.contains(&format!("{name}.read()"))) {
+                if !name.is_empty() && name.chars().all(identifier) && borrows(&args, &name) {
                     return Some(name);
                 }
                 rest = after;
@@ -188,6 +195,7 @@ mod tests {
     fn a_state_is_never_written_while_a_borrow_of_it_is_alive() {
         let mut files = Vec::new();
         view_sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/view"), &mut files);
+        assert!(!files.is_empty(), "no sources found to scan");
         let mut found = Vec::new();
         for file in files {
             let text = std::fs::read_to_string(&file).unwrap_or_default();
@@ -209,5 +217,8 @@ mod tests {
         assert_eq!(writes_while_reading("pose.set(pose.peek().toggled())"), Some("pose".into()));
         assert_eq!(writes_while_reading("let next = pose.peek().factor(1.); put(pose, next);"), None);
         assert_eq!(writes_while_reading("size.set(now.larger(*tile.peek()))"), None);
+        assert_eq!(writes_while_reading("put(self.pose, self.pose.peek().factor(1.))"), Some("self.pose".into()));
+        assert_eq!(writes_while_reading("put(pose, old_pose.peek().factor(1.))"), None);
+        assert_eq!(writes_while_reading("a.name.set(b.name.peek().clone())"), None);
     }
 }

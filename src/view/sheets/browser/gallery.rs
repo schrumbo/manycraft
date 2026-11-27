@@ -306,8 +306,7 @@ impl Component for Lightbox {
                 return;
             }
             let area = *stage.peek();
-            let next = pose.peek().factor(factor, fit_scale(area, size), area, size, (0., 0.));
-            put(pose, next);
+            adjust(pose, |p| p.factor(factor, fit_scale(area, size), area, size, (0., 0.)));
         };
         let mut step = move |by: isize| {
             let next = (current as isize).saturating_add(by).clamp(0, count as isize - 1) as usize;
