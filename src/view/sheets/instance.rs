@@ -26,7 +26,7 @@ use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::select::Select;
 use crate::view::kit::sheet::{self, Card, Primary};
 use crate::view::kit::progress::placeholder;
-use crate::view::kit::stepper::Stepper;
+use crate::view::kit::stepper::{Stepper, Typing};
 use crate::view::kit::switch::{Switch, SwitchLabel};
 use crate::view::kit::text::{line, mono, para};
 use crate::view::kit::{off_ui, toast, use_theme};
@@ -480,7 +480,12 @@ impl Component for Create {
         let press = pressure(memory, total, *flow.free.read(), memory_max);
         let stepper = Stepper::new("instance.memory", tr("Arbeitsspeicher"), i64::from(memory), i64::from(forms::MEMORY_MIN), i64::from(memory_max.max(forms::MEMORY_MIN)))
             .step(i64::from(forms::MEMORY_STEP))
-            .shown(forms::memory_label(memory))
+            .unit(tr("GB"))
+            .typing(Typing {
+                parse: |text| forms::parse_memory_gb(text).map(i64::from),
+                show: |mb| forms::memory_gb(u32::try_from(mb).unwrap_or(forms::MEMORY_MIN)),
+                hint: trf("%@ bis %@", &[&forms::memory_gb(forms::MEMORY_MIN), &forms::memory_label(memory_max.max(forms::MEMORY_MIN))]),
+            })
             .disabled(locked.clone())
             .on_change(move |mb| flow.set_memory(u32::try_from(mb).unwrap_or(forms::MEMORY_MIN)));
         let mut memory_row = Line::new("instance.memory.row", tr("Arbeitsspeicher")).control(stepper);

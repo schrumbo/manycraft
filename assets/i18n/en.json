@@ -2440,5 +2440,7 @@
   "läuft nicht": "isn’t running",
   "zu spät, nicht mehr gesendet": "too late, not sent anymore",
   "Dort läuft gerade kein Account.": "No account is running there.",
-  "noch eine Nachricht…": "another message…"
+  "noch eine Nachricht…": "another message…",
+  "GB": "GB",
+  "%@ bis %@": "%@ to %@"
 }

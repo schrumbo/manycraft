@@ -279,9 +279,26 @@ pub fn check_names(text: &str, accounts: &[Account]) -> Vec<(String, Listed)> {
 
 /// Memory in MB as people read it: `1 GB`, `2,5 GB`.
 pub fn memory_label(mb: u32) -> String {
+    format!("{} GB", memory_gb(mb))
+}
+
+/// Memory in MB as the number of GB alone: `1`, `2,5`.
+pub fn memory_gb(mb: u32) -> String {
     let tenths = (u64::from(mb) * 10 + 512) / 1024;
     let text = if tenths % 10 == 0 { format!("{}", tenths / 10) } else { format!("{}.{}", tenths / 10, tenths % 10) };
-    format!("{} GB", crate::core::i18n::decimal(text))
+    crate::core::i18n::decimal(text)
+}
+
+/// MB for a number of GB typed by a person: `4`, `2,5`, `2.5 GB`; `None` for anything that is not a plain positive number.
+pub fn parse_memory_gb(text: &str) -> Option<u32> {
+    let lower = text.trim().to_lowercase();
+    let number = lower.strip_suffix("gb").or_else(|| lower.strip_suffix('g')).unwrap_or(&lower).trim().replace(',', ".");
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') || number.matches('.').count() > 1 {
+        return None;
+    }
+    let gb: f64 = number.parse().ok()?;
+    let mb = (gb * 1024.).round();
+    (mb >= 1. && mb <= f64::from(u32::MAX)).then_some(mb as u32)
 }
 
 /// `mb` of free memory as [`memory_label`] shows it, rounded down so that it never reads as more than there is.
@@ -594,6 +611,17 @@ No-Dash
         assert_eq!(pick_background(level, kept, 3), (tuned, None));
         assert_eq!(pick_background(tuned, None, 3), (tuned, None));
         assert_eq!(pick_background(Background::Balanced, None, 3), (Background::Balanced.to_custom(), None));
+    }
+
+    #[test]
+    fn typed_gigabytes_become_megabytes() {
+        assert_eq!(parse_memory_gb("4"), Some(4096));
+        assert_eq!(parse_memory_gb(" 2,5 "), Some(2560));
+        assert_eq!(parse_memory_gb("2.5 GB"), Some(2560));
+        assert_eq!(parse_memory_gb("3g"), Some(3072));
+        for bad in ["", "gb", "abc", "-2", "1.2.3", "0", "2 MB", "1e3"] {
+            assert_eq!(parse_memory_gb(bad), None, "{bad}");
+        }
     }
 
     #[test]
