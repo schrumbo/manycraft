@@ -1702,7 +1702,7 @@ mod tests {
     fn health_and_food_are_reported_when_they_change_and_zero_health_is_a_death() {
         use play::clientbound as p;
         let (tx, rx) = std::sync::mpsc::channel();
-        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
+        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, account: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
         let shared = Shared::new(&spec, tx);
         let mut link = shared.lock();
         link.phase = Phase::Play;
