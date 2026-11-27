@@ -168,6 +168,8 @@ pub enum Need {
     Conduct,
     /// A server showed a connection-only account a map or a menu the user has not looked at yet.
     Screen,
+    /// Players the user does not own are near a connection-only account.
+    Nearby,
     Disconnected,
     Dead,
     Crashed,
@@ -176,7 +178,7 @@ pub enum Need {
 }
 
 impl Need {
-    pub const ALL: [Need; 9] = [Need::SignIn, Need::Offer, Need::Conduct, Need::Screen, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
+    pub const ALL: [Need; 10] = [Need::SignIn, Need::Offer, Need::Conduct, Need::Screen, Need::Nearby, Need::Disconnected, Need::Dead, Need::Crashed, Need::Failed, Need::Banned];
 }
 
 /// How many of a set of games each selection action acts on.
@@ -243,6 +245,17 @@ pub struct Game {
     pub last_chat: Option<String>,
     /// What its server shows it besides the world, for a connection-only account.
     pub shows: Shows,
+    /// Its health and food as its server last said, for a connection-only account.
+    pub vitals: Option<Vitals>,
+    /// The players near it that are none of the user's accounts, sorted, for a connection-only account.
+    pub nearby: Vec<String>,
+}
+
+/// A connection-only account's health in half hearts and its food level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Vitals {
+    pub health: u16,
+    pub food: u8,
 }
 
 /// Whether a connection-only account holds a map or has a menu open, and whether the user has looked since it changed.
@@ -285,17 +298,25 @@ impl Game {
 
     /// A stopped game of `account_id` named `name`, played by `batch_id` with instance `instance_id`.
     pub fn new(key: String, batch_id: String, instance_id: String, account_id: Uuid, name: String) -> Self {
-        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None, headless: false, connection: false, last_chat: None, shows: Shows::default() }
+        Self { key, batch_id, instance_id, account_id, name, phase: Phase::Stopped, reconnect_attempts: 0, stopping: false, overdue: false, hint: Hint::default(), memory_wait: None, measured_as: None, headless: false, connection: false, last_chat: None, shows: Shows::default(), vitals: None, nearby: Vec::new() }
     }
 
-    /// The work it needs: what its phase needs, else a map or menu the user has not looked at.
+    /// The work it needs: what its phase needs, else a map or menu the user has not looked at, else other players near it.
     pub fn need(&self) -> Option<Need> {
-        self.phase.need().or_else(|| (self.shows.unseen && self.shows.any() && self.phase.is_running()).then_some(Need::Screen))
+        self.phase
+            .need()
+            .or_else(|| (self.shows.unseen && self.shows.any() && self.phase.is_running()).then_some(Need::Screen))
+            .or_else(|| (!self.nearby.is_empty() && self.phase.on_server()).then_some(Need::Nearby))
     }
 
     /// Whether it needs the user, by its phase or by what its server shows it.
     pub fn needs_attention(&self) -> bool {
-        self.phase.needs_attention() || self.need() == Some(Need::Screen)
+        self.phase.needs_attention() || matches!(self.need(), Some(Need::Screen | Need::Nearby))
+    }
+
+    /// Whether a notification about it still holds: its phase needs the user or strangers are near it.
+    pub fn alerting(&self) -> bool {
+        self.phase.needs_attention() || self.need() == Some(Need::Nearby)
     }
 
     /// Whether it counts as running in every count of running games: its phase does and no screen waits for the user.

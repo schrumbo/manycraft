@@ -520,6 +520,8 @@ fn moments(key: &str, m: &Model) -> Vec<Moment> {
                 Kind::Banned => tr("Gesperrt"),
                 Kind::Crashed => tr("Abgestürzt"),
                 Kind::StartFailed => tr("Start fehlgeschlagen"),
+                Kind::Died => tr("Gestorben"),
+                Kind::Respawned => tr("Wiederbelebt"),
             };
             let reason = if e.reason.trim().is_empty() { e.server.clone().unwrap_or_default() } else { e.reason.trim().to_owned() };
             Moment { when: super::instance_files::when(i64::try_from(e.at).unwrap_or(i64::MAX)), what, reason }

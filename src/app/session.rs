@@ -13,6 +13,8 @@ pub enum Alert {
     Banned,
     Crashed,
     Login,
+    Died,
+    Nearby,
     Other,
 }
 
@@ -24,6 +26,7 @@ impl Alert {
             Phase::Banned { .. } => Self::Banned,
             Phase::Crashed { .. } => Self::Crashed,
             Phase::LoginNeeded => Self::Login,
+            Phase::Dead { .. } => Self::Died,
             _ => Self::Other,
         }
     }
@@ -146,6 +149,14 @@ pub struct Session {
     pub woken: HashSet<String>,
     /// Whether the saved sign-ins were checked once.
     pub refreshed: bool,
+    /// When each stranger last raised an alert near each connection-only account, by key and lower-case name, so one who flickers at the edge of sight is one incident.
+    pub strangers: HashMap<(String, String), Instant>,
+    /// Bumped by every death a connection-only account respawns from on its own, so a timer of an older one does nothing.
+    pub respawn_seq: u64,
+    /// The timer of the automatic respawn of each dead account, by key.
+    pub respawns: HashMap<String, u64>,
+    /// When each connection-only account died lately, to stop respawning one that keeps dying.
+    pub deaths: HashMap<String, std::collections::VecDeque<Instant>>,
     /// Attention collected per batch for one notification.
     pub alerts: HashMap<String, Vec<(String, Alert)>>,
     /// Process ids of the games whose mod connected.

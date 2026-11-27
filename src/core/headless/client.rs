@@ -67,6 +67,7 @@ const PACK_DECLINED: i32 = 1;
 const PACK_ACCEPTED: i32 = 3;
 const PACK_DOWNLOADED: i32 = 4;
 const PERFORM_RESPAWN: i32 = 0;
+const MAIN_HAND: i32 = 0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -129,6 +130,9 @@ struct Link {
     me: Uuid,
     dimension: String,
     due: Option<Instant>,
+    vitals: Option<(u16, u8)>,
+    nearby: Vec<String>,
+    sequence: i32,
 }
 
 /// What the connection's thread and its handle share.
@@ -169,6 +173,9 @@ impl Shared {
             me: spec.uuid,
             dimension: String::new(),
             due: None,
+            vitals: None,
+            nearby: Vec::new(),
+            sequence: 0,
         };
         Self { key: spec.key.clone(), events, link: Mutex::new(link), wake: Condvar::new(), running: AtomicBool::new(true), drawing: Arc::default() }
     }
@@ -280,6 +287,22 @@ impl Shared {
                     }
                 }
             }
+            ToMod::Hotbar { slot } => {
+                if link.phase == Phase::Play
+                    && link.dead.is_none()
+                    && link.screen.select(usize::from(*slot))
+                {
+                    write(&mut link, play::serverbound::SET_CARRIED_ITEM, Out::default().i16(i16::from(*slot)))?;
+                }
+            }
+            ToMod::UseItem => {
+                if link.phase == Phase::Play && link.dead.is_none() {
+                    link.sequence = link.sequence.wrapping_add(1);
+                    let [yaw, pitch] = link.rotation;
+                    let sequence = link.sequence;
+                    write(&mut link, play::serverbound::USE_ITEM, Out::default().varint(MAIN_HAND).varint(sequence).f32(yaw).f32(pitch))?;
+                }
+            }
             ToMod::Capture { width } => {
                 self.picture(&link, *width, false);
             }
@@ -331,6 +354,24 @@ impl Shared {
         let [x, _, z] = link.position;
         if link.loaded && (link.world.around(x, z, SHOT_RADIUS) || since.elapsed() >= SHOT_WAIT) && self.picture(link, SHOT_WIDTH, true) {
             link.due = None;
+        }
+    }
+
+    /// Reports health and food when the values the tile shows changed.
+    fn show_vitals(&self, link: &mut Link, health: f32, food: i32) {
+        let shown = (health.max(0.0).ceil().min(f32::from(u16::MAX)) as u16, food.clamp(0, i32::from(u8::MAX)) as u8);
+        if link.vitals != Some(shown) {
+            link.vitals = Some(shown);
+            self.emit(FromMod::Vitals { health: shown.0, food: shown.1 });
+        }
+    }
+
+    /// Reports the players near the account when the set changed.
+    fn show_nearby(&self, link: &mut Link) {
+        let players = link.crowd.players_near(link.me);
+        if players != link.nearby {
+            link.nearby.clone_from(&players);
+            self.emit(FromMod::Nearby { players });
         }
     }
 
@@ -476,6 +517,8 @@ fn keep_connected(shared: &Shared, spec: &Spec) {
                     link.held.clear();
                     link.dead = None;
                     link.world.clear();
+                    link.crowd = Crowd::default();
+                    shared.show_nearby(&mut link);
                     shared.report(&mut link, StateKind::Disconnected, Some(reason.text), Some(cause), None);
                 }
                 let mut link = shared.lock();
@@ -512,6 +555,9 @@ fn session(shared: &Shared, spec: &Spec) -> End {
         link.held.clear();
         link.unacked = 0;
         link.crowd = Crowd::default();
+        link.vitals = None;
+        link.sequence = 0;
+        shared.show_nearby(&mut link);
         link.status.reset();
         shared.report(&mut link, StateKind::Connecting, None, None, None);
     }
@@ -876,7 +922,9 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
     }
     if Crowd::reads(id) {
         let me = link.position;
-        link.crowd.read(id, r, me)?;
+        let read = link.crowd.read(id, r, me);
+        shared.show_nearby(link);
+        read?;
         return Ok(None);
     }
     if Maps::reads(id) {
@@ -911,10 +959,14 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
             if let Err(e) = seen(link, id, r) {
                 eprintln!("{}: world packet {id} not read: {e:#}", shared.key);
             }
+            if id == c::LOGIN {
+                shared.show_nearby(link);
+            }
         }
         c::RESPAWN => {
             link.world.clear();
             link.crowd.clear();
+            shared.show_nearby(link);
             let mut keep = 0;
             if let Ok(kind) = r.varint() {
                 link.world.enter(kind);
@@ -937,6 +989,7 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
             let health = r.f32()?;
             let (food, saturation) = (r.varint()?, r.f32()?);
             link.status.health(health, food, saturation);
+            shared.show_vitals(link, health, food);
             if health <= 0.0 && link.dead.is_none() {
                 link.dead = Some(died());
                 shared.settle(link);
@@ -966,6 +1019,8 @@ fn playing(shared: &Shared, link: &mut Link, id: i32, r: &mut In, types: &[ChatT
             link.maps.reset();
             link.world.clear();
             link.crowd = Crowd::default();
+            link.vitals = None;
+            shared.show_nearby(link);
             link.status.reset();
             shared.show_screen(link);
             link.phase = Phase::Configuration;
@@ -1287,6 +1342,32 @@ mod tests {
         let mut out = Out::default();
         out.varint(0).string(dimension).i64(0).varint(0).varint(0).bool(false).bool(false).bool(false).varint(0).varint(0).u8(0);
         out.0
+    }
+
+    fn health(health: f32, food: i32) -> Vec<u8> {
+        let mut out = Out::default();
+        out.f32(health).varint(food).f32(0.0);
+        out.0
+    }
+
+    #[test]
+    fn health_and_food_are_reported_when_they_change_and_zero_health_is_a_death() {
+        use play::clientbound as p;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spec = Spec { key: "k".into(), address: "127.0.0.1:1".into(), name: "Dev".into(), uuid: Uuid::nil(), session: None, version: "26.3".into(), packs: Packs::Accept, proxy: None, conduct: Vec::new() };
+        let shared = Shared::new(&spec, tx);
+        let mut link = shared.lock();
+        link.phase = Phase::Play;
+        let mut seen = |link: &mut Link, health: f32, food: i32| {
+            playing(&shared, link, p::SET_HEALTH, &mut In::new(&self::health(health, food)), &[]).unwrap();
+            rx.try_iter().filter_map(|e| if let Event::Message { message: FromMod::Vitals { health, food }, .. } = e { Some((health, food)) } else { None }).collect::<Vec<_>>()
+        };
+        assert_eq!(seen(&mut link, 14.0, 18), [(14, 18)]);
+        assert!(seen(&mut link, 14.0, 18).is_empty(), "the same values again say nothing");
+        assert_eq!(seen(&mut link, 6.5, 17), [(7, 17)], "half hearts round up so a living player never reads zero");
+        assert!(link.dead.is_none());
+        assert_eq!(seen(&mut link, 0.0, 17), [(0, 17)]);
+        assert!(link.dead.is_some());
     }
 
     #[test]

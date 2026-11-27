@@ -151,6 +151,8 @@ pub fn moments(key: &str, m: &Model) -> Vec<Moment> {
                 Kind::Banned => tr("Gesperrt"),
                 Kind::Crashed => tr("Abgestürzt"),
                 Kind::StartFailed => tr("Start fehlgeschlagen"),
+                Kind::Died => tr("Gestorben"),
+                Kind::Respawned => tr("Wiederbelebt"),
             };
             let reason = if e.reason.trim().is_empty() { e.server.clone().unwrap_or_default() } else { e.reason.trim().to_owned() };
             Moment { when: when(e.at), what, reason }
@@ -251,6 +253,7 @@ pub fn need_label(need: Need, count: usize) -> String {
         Need::Offer => trf("%lld Ressourcenpaket", &[&count]),
         Need::Conduct => trf("%lld Serverregeln", &[&count]),
         Need::Screen => trf("%lld Bildschirm", &[&count]),
+        Need::Nearby => trf("%lld Spieler in der Nähe", &[&count]),
         Need::Disconnected => trf("%lld Getrennt", &[&count]),
         Need::Dead => trf("%lld Gestorben", &[&count]),
         Need::Crashed => trf("%lld Abgestürzt", &[&count]),
@@ -288,7 +291,7 @@ pub fn fix(need: Need, keys: &[String], m: &Model) -> Option<(String, Fix)> {
         }
         Need::Offer => (pick("Alle annehmen", "Annehmen"), Fix::Events(vec![Event::AnswerPack { keys: keys.to_vec(), accept: true }])),
         Need::Conduct => (pick("Alle Regeln annehmen", "Regeln annehmen"), Fix::Events(vec![Event::AnswerRules { keys: keys.to_vec(), accept: true }])),
-        Need::Screen => return None,
+        Need::Screen | Need::Nearby => return None,
         Need::Disconnected => (pick("Alle verbinden", "Verbinden"), Fix::Events(vec![Event::ReconnectMany(keys.to_vec())])),
         Need::Dead => (pick("Alle wiederbeleben", "Wiederbeleben"), Fix::Events(keys.iter().map(|k| Event::Respawn(k.clone())).collect())),
         Need::Crashed | Need::Failed => (if many { trf("Neu starten (%lld)", &[&keys.len()]) } else { tr("Neu starten") }, Fix::Events(vec![Event::StartMany(keys.to_vec())])),

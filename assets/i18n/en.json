@@ -2393,5 +2393,16 @@
   "Sync stellt gerade Ordner dieser Instanz um. Versuch es gleich noch einmal.": "Sync is switching folders of this instance right now. Try again in a moment.",
   "Sync ausschalten?": "Turn off Sync?",
   "Es entstehen %1$lld eigene Kopien, zusammen etwa %2$@.": "This creates %1$lld separate copies, about %2$@ together.",
-  "Es entstehen mehrere Kopien.": "This creates several copies."
+  "Es entstehen mehrere Kopien.": "This creates several copies.",
+  "Spieler in der Nähe": "Player nearby",
+  "Automatisch nach dem Tod": "Automatically after death",
+  "Wiederbelebt": "Respawned",
+  "%lld Spieler in der Nähe": "%lld players nearby",
+  "Gegenstand benutzen": "Use item",
+  "Hotbar-Slot %lld": "Hotbar slot %lld",
+  "Spieler in der Nähe: %@": "Player nearby: %@",
+  "Leben %lld · Hunger %lld": "Health %lld · Hunger %lld",
+  "Nach dem Tod automatisch wiederbeleben": "Respawn automatically after death",
+  "Ein gestorbener Account steigt nach kurzer Pause wieder ein. Jeder Tod steht im Verlauf.": "A dead account rejoins after a short pause. Every death is in the history.",
+  "Ein gestorbener Account wartet, bis du ihn in seiner Kachel wiederbelebst.": "A dead account waits until you respawn it in its tile."
 }

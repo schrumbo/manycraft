@@ -654,6 +654,11 @@ fn bare(t: &Theme, game: &Game, m: &Model, account: Option<&Account>, face: Opti
             _ => words::caption(game, m),
         };
         column = column.child(line(t, place, font::CAPTION, t.text2).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
+        if !game.nearby.is_empty() {
+            column = column.child(line(t, trf("Spieler in der Nähe: %@", &[&game.nearby.join(", ")]), font::CAPTION, t.attention_text).font_weight(FontWeight::MEDIUM).max_lines(1).text_overflow(TextOverflow::Ellipsis).width(Size::fill()).text_align(TextAlign::Center));
+        } else if let Some(v) = game.vitals.filter(|_| game.phase.on_server() && !game.stopping) {
+            column = column.child(line(t, trf("Leben %lld · Hunger %lld", &[&v.health, &v.food]), font::CAPTION2, t.text3).max_lines(1).width(Size::fill()).text_align(TextAlign::Center));
+        }
         let rules = match &game.phase {
             Phase::Offer { offer, .. } if offer.is_conduct() => offer.text.clone(),
             _ => None,

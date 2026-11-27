@@ -67,7 +67,7 @@ pub(super) fn flush_alert(m: &mut Model, env: &Env, batch_id: &str, out: &mut Ve
     if !env.settings.notifications.attention {
         return;
     }
-    let open: Vec<&(String, Alert)> = list.iter().filter(|(name, _)| m.games.values().any(|i| i.batch_id == batch_id && i.name == *name && i.phase.needs_attention())).collect();
+    let open: Vec<&(String, Alert)> = list.iter().filter(|(name, _)| m.games.values().any(|i| i.batch_id == batch_id && i.name == *name && i.alerting())).collect();
     let mut seen = HashSet::new();
     let names: Vec<String> = open.iter().filter(|(n, _)| seen.insert(n.clone())).map(|(n, _)| n.clone()).collect();
     let kinds: HashSet<Alert> = open.iter().map(|(_, k)| *k).collect();
@@ -81,14 +81,22 @@ pub(super) fn flush_alert(m: &mut Model, env: &Env, batch_id: &str, out: &mut Ve
         (1, Some(Alert::Banned)) => trf(if n == 1 { "%lld Account gesperrt" } else { "%lld Accounts gesperrt" }, &[&n]),
         (1, Some(Alert::Crashed)) => trf(if n == 1 { "%lld Account abgestürzt" } else { "%lld Accounts abgestürzt" }, &[&n]),
         (1, Some(Alert::Login)) => trf(if n == 1 { "%lld Account muss sich anmelden" } else { "%lld Accounts müssen sich anmelden" }, &[&n]),
+        (1, Some(Alert::Died)) => trf(if n == 1 { "%lld Account gestorben" } else { "%lld Accounts gestorben" }, &[&n]),
+        (1, Some(Alert::Nearby)) => tr("Spieler in der Nähe"),
         _ => trf(if n == 1 { "%lld Account braucht dich" } else { "%lld Accounts brauchen dich" }, &[&n]),
     };
     let title = format!("{what} · {batch_name}");
-    let mut body = names.iter().take(ALERT_NAMES).cloned().collect::<Vec<_>>().join(", ");
+    let mut body = if kinds.len() == 1 && kinds.contains(&Alert::Nearby) {
+        let mut lines: Vec<String> = m.games.values().filter(|i| i.batch_id == batch_id && i.alerting() && names.contains(&i.name)).map(|i| format!("{}: {}", i.name, i.nearby.join(", "))).collect();
+        lines.sort();
+        lines.iter().take(ALERT_NAMES).cloned().collect::<Vec<_>>().join("; ")
+    } else {
+        names.iter().take(ALERT_NAMES).cloned().collect::<Vec<_>>().join(", ")
+    };
     if n > ALERT_NAMES {
         body = trf("%@ und %lld weitere", &[&body, &(n - ALERT_NAMES)]);
     }
-    let mut keys: Vec<String> = m.games.iter().filter(|(_, i)| i.batch_id == batch_id && i.phase.needs_attention() && names.contains(&i.name)).map(|(k, _)| k.clone()).collect();
+    let mut keys: Vec<String> = m.games.iter().filter(|(_, i)| i.batch_id == batch_id && i.alerting() && names.contains(&i.name)).map(|(k, _)| k.clone()).collect();
     keys.sort();
     out.push(Effect::Notify { tag: attention_tag(batch_id), title, body, keys });
 }

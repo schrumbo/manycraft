@@ -354,6 +354,15 @@ impl Crowd {
         Seen { entities, hand, maps: pictures }
     }
 
+    /// The names of the players near the account `me` that the player list knows, sorted and without repeats. Entities that
+    /// pose as players without a listed profile, like the figures of some lobbies, are left out.
+    pub fn players_near(&self, me: Uuid) -> Vec<String> {
+        let mut names: Vec<String> = self.near.values().filter(|m| m.uuid != me && ENTITY_TYPES[usize::from(m.kind)] == "player").filter_map(|m| self.players.get(&m.uuid)).map(|p| p.name.clone()).collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// The ids of the maps in the item frames the crowd keeps.
     pub fn framed(&self) -> impl Iterator<Item = i32> + '_ {
         self.near.values().filter_map(|m| match m.data.as_deref() {
@@ -898,6 +907,30 @@ mod tests {
         assert!(c.seen([0.0; 3], 1000.0, Uuid::nil(), None, false, &Maps::default(), |_, _, _| None).entities[0].name.is_none());
         assert_eq!(e.equipment[render::slot::MAIN_HAND].as_ref().unwrap().id, "iron_sword");
         assert_eq!(e.equipment[render::slot::HEAD].as_ref().unwrap().id, "diamond_helmet");
+    }
+
+    #[test]
+    fn players_near_lists_listed_players_other_than_the_account_by_name() {
+        let mut c = Crowd::default();
+        let list = |c: &mut Crowd, id: u128, name: &str| {
+            let mut o = Out::default();
+            o.u8(0x01).varint(1).uuid(Uuid::from_u128(id)).string(name).varint(0);
+            c.players(&mut In::new(&o.0)).unwrap();
+        };
+        list(&mut c, 5, "Zed");
+        list(&mut c, 6, "Alex");
+        list(&mut c, 9, "Me");
+        for id in [5, 6, 7, 9] {
+            add(&mut c, id, "player", [0.0; 3]);
+        }
+        add(&mut c, 8, "pig", [0.0; 3]);
+        assert_eq!(c.players_near(Uuid::from_u128(9)), ["Alex", "Zed"], "an unlisted player (7), a pig and the account itself are no names");
+        let mut o = Out::default();
+        o.varint(1).uuid(Uuid::from_u128(5));
+        c.players_gone(&mut In::new(&o.0)).unwrap();
+        assert_eq!(c.players_near(Uuid::from_u128(9)), ["Alex"]);
+        c.clear();
+        assert!(c.players_near(Uuid::from_u128(9)).is_empty());
     }
 
     #[test]

@@ -50,6 +50,16 @@ pub enum Command {
     RestartSelected,
     ReconnectSelected,
     ScreenshotSelected,
+    UseItem,
+    Hotbar1,
+    Hotbar2,
+    Hotbar3,
+    Hotbar4,
+    Hotbar5,
+    Hotbar6,
+    Hotbar7,
+    Hotbar8,
+    Hotbar9,
     AcceptPacks,
     DeclinePacks,
     AcceptRules,
@@ -199,12 +209,22 @@ impl Shortcut {
 
 impl Command {
     /// Every command, in the order the palette lists them.
-    pub const ALL: [Command; 72] = [
+    pub const ALL: [Command; 82] = [
         Command::StartSelected,
         Command::StopSelected,
         Command::RestartSelected,
         Command::ReconnectSelected,
         Command::ScreenshotSelected,
+        Command::UseItem,
+        Command::Hotbar1,
+        Command::Hotbar2,
+        Command::Hotbar3,
+        Command::Hotbar4,
+        Command::Hotbar5,
+        Command::Hotbar6,
+        Command::Hotbar7,
+        Command::Hotbar8,
+        Command::Hotbar9,
         Command::AcceptPacks,
         Command::DeclinePacks,
         Command::AcceptRules,
@@ -274,6 +294,22 @@ impl Command {
         Command::ToggleMaximize,
     ];
 
+    /// The hotbar slot (0 to 8) a command selects.
+    fn slot(self) -> Option<u8> {
+        Some(match self {
+            Command::Hotbar1 => 0,
+            Command::Hotbar2 => 1,
+            Command::Hotbar3 => 2,
+            Command::Hotbar4 => 3,
+            Command::Hotbar5 => 4,
+            Command::Hotbar6 => 5,
+            Command::Hotbar7 => 6,
+            Command::Hotbar8 => 7,
+            Command::Hotbar9 => 8,
+            _ => return None,
+        })
+    }
+
     /// The name the drive tool and the GPUI shell use for it.
     pub fn name(self) -> &'static str {
         match self {
@@ -309,6 +345,16 @@ impl Command {
             Command::RestartSelected => "RestartSelected",
             Command::ReconnectSelected => "ReconnectSelected",
             Command::ScreenshotSelected => "ScreenshotSelected",
+            Command::UseItem => "UseItem",
+            Command::Hotbar1 => "Hotbar1",
+            Command::Hotbar2 => "Hotbar2",
+            Command::Hotbar3 => "Hotbar3",
+            Command::Hotbar4 => "Hotbar4",
+            Command::Hotbar5 => "Hotbar5",
+            Command::Hotbar6 => "Hotbar6",
+            Command::Hotbar7 => "Hotbar7",
+            Command::Hotbar8 => "Hotbar8",
+            Command::Hotbar9 => "Hotbar9",
             Command::AcceptPacks => "AcceptPacks",
             Command::DeclinePacks => "DeclinePacks",
             Command::AcceptRules => "AcceptRules",
@@ -382,6 +428,8 @@ impl Command {
             Command::RestartSelected => tr("Ausgewählte neu starten"),
             Command::ReconnectSelected => tr("Ausgewählte neu verbinden"),
             Command::ScreenshotSelected => tr("Screenshot der Ausgewählten"),
+            Command::UseItem => tr("Gegenstand benutzen"),
+            c if c.slot().is_some() => trf("Hotbar-Slot %lld", &[&(c.slot().unwrap_or(0) + 1)]),
             Command::AcceptPacks => tr("Ressourcenpakete annehmen"),
             Command::DeclinePacks => tr("Ressourcenpakete ablehnen"),
             Command::AcceptRules => tr("Serverregeln annehmen"),
@@ -422,6 +470,8 @@ impl Command {
             Command::RestartSelected | Command::ReconnectSelected | Command::ReconnectDropped => Icon::Refresh,
             Command::MessageSelected => Icon::Message,
             Command::ScreenshotSelected => Icon::Image,
+            Command::UseItem => Icon::Play,
+            c if c.slot().is_some() => Icon::Layers,
             Command::AcceptPacks | Command::DeclinePacks | Command::AcceptRules | Command::DeclineRules => Icon::Package,
             Command::MoveSelected | Command::LeaveSelected | Command::GroupByBatch => Icon::Layers,
             Command::ShowUngrouped => Icon::Grid,
@@ -497,6 +547,16 @@ impl Command {
             Command::RestartSelected => ks(Code::KeyR),
             Command::ReconnectSelected => k(Code::KeyJ),
             Command::ScreenshotSelected => ks(Code::KeyS),
+            Command::UseItem => ks(Code::KeyE),
+            Command::Hotbar1 => ks(Code::Digit1),
+            Command::Hotbar2 => ks(Code::Digit2),
+            Command::Hotbar3 => ks(Code::Digit3),
+            Command::Hotbar4 => ks(Code::Digit4),
+            Command::Hotbar5 => ks(Code::Digit5),
+            Command::Hotbar6 => ks(Code::Digit6),
+            Command::Hotbar7 => ks(Code::Digit7),
+            Command::Hotbar8 => ks(Code::Digit8),
+            Command::Hotbar9 => ks(Code::Digit9),
             Command::AcceptPacks => ks(Code::KeyY),
             Command::DeclinePacks => ka(Code::KeyY),
             Command::AcceptRules => ks(Code::KeyL),
@@ -545,6 +605,7 @@ impl Command {
             Command::RestartSelected => grid && picked().any(|g| g.phase.has_process()),
             Command::ReconnectSelected => grid && picked().any(|g| g.phase.reconnectable() && !g.stopping),
             Command::ScreenshotSelected => grid && picked().any(|g| g.headless && g.phase.server().is_some() && !g.stopping),
+            Command::UseItem | Command::Hotbar1 | Command::Hotbar2 | Command::Hotbar3 | Command::Hotbar4 | Command::Hotbar5 | Command::Hotbar6 | Command::Hotbar7 | Command::Hotbar8 | Command::Hotbar9 => grid && picked().any(|g| g.connection && g.phase.on_server() && !g.stopping),
             Command::AcceptPacks if selected.is_empty() => m.games.values().any(|g| g.phase.needs_pack_answer()),
             Command::AcceptPacks | Command::DeclinePacks => grid && picked().any(|g| g.phase.needs_pack_answer()),
             Command::AcceptRules if selected.is_empty() => m.games.values().any(|g| g.phase.needs_rules_answer()),
@@ -672,6 +733,11 @@ impl Command {
             Command::RestartSelected => store.dispatch(Event::Restart(keys())),
             Command::ReconnectSelected => store.dispatch(Event::ReconnectMany(keys())),
             Command::ScreenshotSelected => store.dispatch(Event::Capture(keys())),
+            Command::UseItem => keys().into_iter().for_each(|key| store.dispatch(Event::UseItem(key))),
+            c if c.slot().is_some() => {
+                let slot = c.slot().unwrap_or(0);
+                keys().into_iter().for_each(|key| store.dispatch(Event::Hotbar { key, slot }));
+            }
             Command::AcceptPacks | Command::DeclinePacks => {
                 let accept = self == Command::AcceptPacks;
                 store.dispatch(Event::AnswerPack { keys: offers(store, accept), accept });

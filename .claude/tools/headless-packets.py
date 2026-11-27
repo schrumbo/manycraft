@@ -29,7 +29,7 @@ PACKETS = {
     },
     "play": {
         "clientbound": ["chunk_batch_finished", "cookie_request", "disconnect", "disguised_chat", "keep_alive", "ping", "player_chat", "player_combat_kill", "player_position", "resource_pack_pop", "resource_pack_push", "respawn", "set_health", "start_configuration", "system_chat", "transfer", "open_screen", "container_set_content", "container_set_slot", "container_close", "set_cursor_item", "set_player_inventory", "set_held_slot", "map_item_data", "set_title_text", "set_subtitle_text", "set_action_bar_text", "clear_titles", "login", "level_chunk_with_light", "forget_level_chunk", "block_update", "section_blocks_update", "light_update", "add_entity", "remove_entities", "move_entity_pos", "move_entity_pos_rot", "move_entity_rot", "rotate_head", "teleport_entity", "entity_position_sync", "set_entity_data", "set_equipment", "player_info_update", "player_info_remove", "set_time", "game_event", "set_experience", "update_attributes", "update_mob_effect", "remove_mob_effect", "set_objective", "set_display_objective", "set_score", "reset_score", "set_player_team", "boss_event", "set_titles_animation"],
-        "serverbound": ["accept_teleportation", "chat_ack", "chat_command_signed", "chat", "chunk_batch_received", "client_command", "configuration_acknowledged", "cookie_response", "keep_alive", "player_loaded", "pong", "resource_pack", "container_click", "container_close"],
+        "serverbound": ["accept_teleportation", "chat_ack", "chat_command_signed", "chat", "chunk_batch_received", "client_command", "configuration_acknowledged", "cookie_response", "keep_alive", "player_loaded", "pong", "resource_pack", "container_click", "container_close", "set_carried_item", "use_item"],
     },
 }
 

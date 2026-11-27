@@ -747,6 +747,9 @@ impl Component for BatchSheet {
             flowing.push(unattended::screenshots_line(flow.unattended, &lock).into_element());
         }
         flowing.push(unattended::packs_line(flow.unattended, running, &lock).into_element());
+        if u.mode == RunMode::Connection {
+            flowing.push(unattended::respawn_line(flow.unattended, &lock).into_element());
+        }
         form = form.child(group(&t, Some(tr("Ablauf")), flowing, None));
 
         let mut body = rect().width(Size::fill()).spacing(space::M).child(ScrollView::new().width(Size::fill()).height(Size::auto()).max_height(Size::px(body_max(store))).auto_hide_scrollbars(false).child(form));

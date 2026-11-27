@@ -306,7 +306,7 @@ impl<P: Pixels> Sim<P> {
             }
             ToMod::Answer { accept: true, .. } => self.at(Duration::from_millis(300), None, state(key, StateKind::Playing, None)),
             ToMod::Answer { accept: false, .. } => self.at(Duration::from_millis(300), None, Update::Ipc(Event::Message { instance: key.to_owned(), message: FromMod::State { kind: StateKind::Disconnected, server: Some(SERVER.to_owned()), reason: None, cause: Some(DisconnectCause::PackDeclined), offer: None } })),
-            ToMod::Packs { .. } | ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Hint { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers | ToMod::Click { .. } | ToMod::CloseMenu { .. } => {}
+            ToMod::Packs { .. } | ToMod::Hotkeys { .. } | ToMod::Identity { .. } | ToMod::Badge { .. } | ToMod::Hint { .. } | ToMod::Level(_) | ToMod::Options { .. } | ToMod::Servers | ToMod::Click { .. } | ToMod::CloseMenu { .. } | ToMod::Hotbar { .. } | ToMod::UseItem => {}
         }
     }
 
