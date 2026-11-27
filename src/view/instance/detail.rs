@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use freya::prelude::*;
 
-use super::cursor::{Cursor, Live};
+use super::cursor::Cursor;
 use super::mods::problem_view;
 use crate::core::i18n::{tr, trf};
 use crate::core::modmeta::{self, About};
@@ -16,7 +16,7 @@ use crate::view::commands::Shortcut;
 use crate::view::icons::Icon;
 use crate::view::kit::button::Button;
 use crate::view::kit::text::{caption, para};
-use crate::view::kit::{after, off_ui, open_external, page, toast, use_theme};
+use crate::view::kit::{Live, after, off_ui, open_external, page, toast, use_theme};
 use crate::view::readme::{self, Body};
 use crate::view::store::Store;
 use crate::view::theme::{font, space};

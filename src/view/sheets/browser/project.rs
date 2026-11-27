@@ -23,7 +23,7 @@ use crate::view::kit::segmented::{Segment, Segmented};
 use crate::view::kit::text::{caption, hairline, line, para};
 use crate::view::kit::tooltip::WithTip;
 use crate::view::kit::progress::{Tally, Tracked};
-use crate::view::kit::{off_ui, open_external, ring, use_arrows, use_theme};
+use crate::view::kit::{Live, off_ui, open_external, ring, use_arrows, use_theme};
 use crate::view::readme::{self, Body, loading, problem_of, quiet};
 use crate::view::sheets::instance::{Load, problem_view};
 use crate::view::theme::{Theme, faces, font, frame, iconsize, space};
@@ -217,8 +217,7 @@ impl Pg {
                 Some(Err(e)) => Load::Failed(problem_of(&e)),
                 None => Load::Failed(Problem::plain(forms::unexplained())),
             };
-            let mut details = page.details;
-            details.set(loaded);
+            page.details.settle(loaded);
         });
     }
 
@@ -242,8 +241,7 @@ impl Pg {
                 Some(Err(e)) => Load::Failed(problem_of(&e)),
                 None => Load::Failed(Problem::plain(forms::unexplained())),
             };
-            let mut versions = page.versions;
-            versions.set(loaded);
+            page.versions.settle(loaded);
             if wanted.is_empty() {
                 return;
             }
@@ -251,8 +249,7 @@ impl Pg {
             if !page.current(generation) {
                 return;
             }
-            let mut state = page.titles;
-            state.set(Rc::new(titles));
+            page.titles.settle(Rc::new(titles));
         });
     }
 

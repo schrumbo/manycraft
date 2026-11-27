@@ -32,7 +32,7 @@ use crate::view::kit::select::Select;
 use crate::view::kit::sheet;
 use crate::view::kit::switch::Switch as Toggle;
 use crate::view::kit::text::{caption, line, strong};
-use crate::view::kit::{after, off_ui, use_theme};
+use crate::view::kit::{Live, after, off_ui, use_theme};
 use crate::view::native;
 use crate::view::settings::{gpu_label, remember_all_versions};
 use crate::view::store::{Store, use_store};
@@ -887,7 +887,7 @@ fn forget_java_problem(store: Store, id: &str) {
 
 fn choose_java(store: Store, id: String) {
     let nav = store.ui.instance;
-    let (mut picking, mut problems) = (nav.java_picking, nav.java_problem);
+    let (mut picking, problems) = (nav.java_picking, nav.java_problem);
     if !picking.write().insert(id.clone()) {
         return;
     }
@@ -897,11 +897,15 @@ fn choose_java(store: Store, id: String) {
             Some(path) => off_ui(move || remote::probe_java(&path)).await,
             None => None,
         };
-        picking.write().remove(&id);
+        picking.soft(|p| {
+            p.remove(&id);
+        });
         match found {
             Some(Ok(java)) => save::enqueue(store, &id, Job::Save(Change::Option(OptionChange::Java(Some(java.path))))),
             Some(Err(e)) => {
-                problems.write().insert(id, format!("{e:#}"));
+                problems.soft(|p| {
+                    p.insert(id, format!("{e:#}"));
+                });
             }
             None => {}
         }

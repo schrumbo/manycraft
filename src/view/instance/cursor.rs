@@ -3,30 +3,8 @@
 use freya::prelude::*;
 
 use super::entry::ROW;
-use crate::view::kit::Bounds;
+use crate::view::kit::{Bounds, Live};
 use crate::view::theme::space;
-
-pub(super) trait Live<T: 'static> {
-    fn soft(self, f: impl FnOnce(&mut T));
-    fn got(self) -> Option<T>
-    where
-        T: Clone;
-}
-
-impl<T: 'static> Live<T> for State<T> {
-    fn soft(mut self, f: impl FnOnce(&mut T)) {
-        if let Some(mut w) = self.try_write() {
-            f(&mut w);
-        }
-    }
-
-    fn got(self) -> Option<T>
-    where
-        T: Clone,
-    {
-        self.try_peek().map(|r| r.clone())
-    }
-}
 
 /// The file `delta` rows from `cursor`, clamped to the list; the first or last when there is no cursor.
 pub(super) fn step(order: &[String], cursor: Option<&str>, delta: i64) -> Option<String> {

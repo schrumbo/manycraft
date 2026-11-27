@@ -10,6 +10,7 @@ pub mod face;
 pub mod field;
 pub mod grip;
 pub mod group;
+pub mod live;
 pub mod markdown;
 pub mod menu;
 pub mod more;
@@ -32,6 +33,7 @@ use std::time::Duration;
 
 use freya::prelude::*;
 
+pub use live::Live;
 use super::theme::{Theme, frame};
 
 /// Keeps `child` at least `height` tall, centred; torin adds `min_height` to the content instead of clamping, so it cannot do this.

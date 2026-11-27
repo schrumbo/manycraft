@@ -29,7 +29,7 @@ use crate::view::kit::more::More;
 use crate::view::kit::row::Row;
 use crate::view::kit::sheet;
 use crate::view::kit::text::{figure, heading, line, mono, para, secondary, strong};
-use crate::view::kit::{Bounds, after, button_focused, off_ui, toast, use_theme};
+use crate::view::kit::{Bounds, Live, after, button_focused, off_ui, toast, use_theme};
 use crate::view::native;
 use crate::view::store::{Store, use_store};
 use crate::view::theme::{Theme, control, font, frame, iconsize, space};
@@ -144,12 +144,6 @@ impl Scan {
 fn index_of(selected: &Option<PathBuf>, slots: &[Slot]) -> Option<usize> {
     let found = selected.as_ref().and_then(|k| slots.iter().position(|s| s.key() == k.as_path()));
     found.or(if slots.is_empty() { None } else { Some(0) })
-}
-
-fn put<T: 'static>(mut state: State<T>, change: impl FnOnce(&mut T)) {
-    if let Some(mut w) = state.try_write() {
-        change(&mut w);
-    }
 }
 
 fn mode_label(mode: Mode) -> String {
@@ -363,9 +357,9 @@ impl Page {
     fn select(&self, key: PathBuf) {
         let moved = self.selected.try_peek().is_some_and(|s| s.as_deref() != Some(key.as_path()));
         if moved && self.outcome.try_peek().is_some_and(|o| matches!(*o, Some(Outcome::Done(_)))) {
-            put(self.outcome, |o| *o = None);
+            self.outcome.soft(|o| *o = None);
         }
-        put(self.selected, |s| *s = Some(key));
+        self.selected.soft(|s| *s = Some(key));
     }
 
     fn pick(&self, slots: &[Slot], at: usize, scroll: ScrollController, view: f32) {
@@ -423,7 +417,7 @@ impl Page {
         let now = Instant::now();
         let last: Option<(PathBuf, Instant)> = self.last.try_peek().and_then(|l| l.clone());
         let double = last.is_some_and(|(k, at)| k == key && now.duration_since(at) < DOUBLE);
-        put(self.last, |l| *l = if double { None } else { Some((key.clone(), now)) });
+        self.last.soft(|l| *l = if double { None } else { Some((key.clone(), now)) });
         if double {
             self.open(&key);
         }
@@ -450,11 +444,11 @@ impl Page {
     fn begin(&self, key: PathBuf, doing: Doing) -> Arc<Progress> {
         let progress = Arc::new(Progress::default());
         let first = self.work.try_peek().is_some_and(|w| w.is_empty());
-        put(self.work, |w| {
+        self.work.soft(|w| {
             w.insert(key, Work { doing, progress: progress.clone() });
         });
-        put(self.outcome, |o| *o = None);
-        put(self.details, |d| *d = false);
+        self.outcome.soft(|o| *o = None);
+        self.details.soft(|d| *d = false);
         if first {
             let (work, tick) = (self.work, self.tick);
             spawn_in_window(async move {
@@ -463,7 +457,7 @@ impl Page {
                     if work.try_peek().is_none_or(|w| w.is_empty()) {
                         break;
                     }
-                    put(tick, |t| *t += 1);
+                    tick.soft(|t| *t += 1);
                 }
             });
         }
@@ -471,7 +465,7 @@ impl Page {
     }
 
     fn end(&self, key: &Path, outcome: Option<Outcome>) {
-        put(self.work, |w| {
+        self.work.soft(|w| {
             w.remove(key);
         });
         if let Some(Outcome::Failed(problem)) = &outcome
@@ -479,14 +473,14 @@ impl Page {
         {
             toast::show(self.store.ui, problem.text.clone(), None);
         }
-        put(self.outcome, |o| *o = outcome);
-        put(self.details, |d| *d = false);
+        self.outcome.soft(|o| *o = outcome);
+        self.details.soft(|d| *d = false);
         actions::changed(self.store);
     }
 
     fn refuse(&self, text: String) {
-        put(self.outcome, |o| *o = Some(Outcome::Failed(Problem::plain(text))));
-        put(self.details, |d| *d = false);
+        self.outcome.soft(|o| *o = Some(Outcome::Failed(Problem::plain(text))));
+        self.details.soft(|d| *d = false);
     }
 
     fn working(&self, key: &Path) -> bool {
@@ -582,7 +576,7 @@ impl Page {
             match result {
                 Some(Ok(restored)) => {
                     let at = restored.world.clone();
-                    put(page.selected, |s| *s = Some(at));
+                    page.selected.soft(|s| *s = Some(at));
                     offer(page.store, name, FileUndo::Restored { instance: id, world: restored.world, replaced: restored.replaced });
                     page.end(&world, None);
                 }
@@ -645,7 +639,7 @@ impl Page {
                     {
                         let next = slots.get(at + 1).or_else(|| at.checked_sub(1).and_then(|p| slots.get(p)));
                         let next = next.map(|s| s.key().to_path_buf());
-                        put(page.selected, |s| *s = next);
+                        page.selected.soft(|s| *s = next);
                     }
                     offer(page.store, name, FileUndo::Deleted { instance: id, entry });
                     page.end(&key, None);
@@ -957,7 +951,7 @@ fn use_page(store: Store, f: &Facts) -> Page {
             if latest.get() == stamp
                 && let Some(measured) = measured
             {
-                put(scan, |s| {
+                scan.soft(|s| {
                     if let Some(old) = s.as_ref().filter(|o| o.id == id) {
                         *s = Some(Rc::new(Scan { sizes: measured, ..(**old).clone() }));
                     }

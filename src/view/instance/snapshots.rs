@@ -14,7 +14,7 @@ use crate::core::worlds::Progress;
 use crate::ui::forms;
 use crate::ui::instance_files::{bytes, when};
 use crate::view::kit::sheet::{self, Card, Primary};
-use crate::view::kit::{after, off_ui, toast};
+use crate::view::kit::{Live, after, off_ui, toast};
 use crate::view::store::Store;
 use crate::view::theme::frame;
 use crate::view::ui::Ui;
@@ -137,14 +137,18 @@ fn take(store: Store, id: String, reason: Reason, back: Back, then: Then) {
         while Arc::strong_count(&ticker) > 1 {
             after(TICK).await;
             let done = ticker.fraction();
-            if let Some(b) = busy.write().get_mut(&tick_id) {
-                b.progress = Some(done);
-            }
+            busy.soft(|b| {
+                if let Some(b) = b.get_mut(&tick_id) {
+                    b.progress = Some(done);
+                }
+            });
         }
     });
     spawn_in_window(async move {
         let result = off_ui(move || snapshot::take(&made.dir(), &made, reason, &progress)).await;
-        busy.write().remove(&id);
+        busy.soft(|b| {
+            b.remove(&id);
+        });
         actions::changed(store);
         match result {
             Some(Ok(_)) => run(&then),
@@ -198,7 +202,9 @@ fn restore(store: Store, id: &str, snap: &Snapshot) {
     let at = when(snap.at);
     spawn_in_window(async move {
         let result = off_ui(move || snapshot::restore(&instance, &snap_id)).await;
-        busy.write().remove(&id);
+        busy.soft(|b| {
+            b.remove(&id);
+        });
         match result {
             Some(Ok(done)) => {
                 let name = done.instance.name.clone();

@@ -13,7 +13,7 @@ use crate::ui::forms;
 use crate::ui::{remote, transfer};
 use crate::view::icons::Icon;
 use crate::view::kit::sheet::{self, Card, Primary};
-use crate::view::kit::{off_ui, toast};
+use crate::view::kit::{Live, off_ui, toast};
 use crate::view::native;
 use crate::view::store::Store;
 use crate::view::theme::frame;
@@ -162,11 +162,13 @@ pub(crate) fn export(store: Store, id: &str) {
         let Some(made) = store.model.peek().instance(&id).cloned() else { return };
         let (id, name, out) = (made.id.clone(), made.name.clone(), path.clone());
         let mut model = store.model;
-        if !model.write().exporting.insert(id.clone()) {
+        if !model.try_write().is_some_and(|mut m| m.exporting.insert(id.clone())) {
             return;
         }
         let result = off_ui(move || remote::export_instance(&made, &out)).await;
-        model.write().exporting.remove(&id);
+        model.soft(|m| {
+            m.exporting.remove(&id);
+        });
         let what = trf("„%@“ nicht exportiert.", &[&name]);
         match result {
             Some(Ok(())) => native::reveal(&path),
@@ -291,8 +293,7 @@ fn restore(store: Store, name: String, entry: String) {
                 if store.model.peek().instance(&id).is_none() {
                     store.dispatch(Event::InstanceAdded(made));
                 }
-                let mut page = store.ui.page;
-                page.set(Page::Instance(id));
+                store.ui.page.settle(Page::Instance(id));
             }
             Some(Err(e)) => {
                 toast::show(store.ui, forms::explain_as(trf("„%@“ wurde nicht zurückgeholt.", &[&name]), &e).text, None);
@@ -334,7 +335,9 @@ fn reset(store: Store, id: String) {
     spawn_in_window(async move {
         let target = id.clone();
         let result = off_ui(move || remote::reset_instance(&target)).await;
-        busy.write().remove(&id);
+        busy.soft(|b| {
+            b.remove(&id);
+        });
         match result {
             Some(Ok(done)) => {
                 let (name, version) = (done.after.name.clone(), done.after.game_version.clone());

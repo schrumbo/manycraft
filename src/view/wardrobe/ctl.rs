@@ -13,7 +13,7 @@ use crate::core::skin_change::{self as change, Model};
 use crate::core::wardrobe::{self, Added, Fetched};
 use crate::core::drive;
 use crate::ui::forms::Problem;
-use crate::view::kit::{off_thread, toast};
+use crate::view::kit::{Live, off_thread, toast};
 use crate::view::store::Store;
 
 async fn ask() -> Option<PathBuf> {
@@ -232,7 +232,7 @@ impl Ctl {
             let done = rx.recv().await;
             let desk = self.desk();
             let Ok(done) = done else {
-                adds.write().retain(|(i, _)| *i != n);
+                adds.soft(|a| a.retain(|(i, _)| *i != n));
                 return;
             };
             let (arrived, error) = match done {
@@ -242,15 +242,15 @@ impl Ctl {
                 },
                 Err(e) => (Vec::new(), Some(e)),
             };
-            adds.write().retain(|(i, _)| *i != n);
+            adds.soft(|a| a.retain(|(i, _)| *i != n));
             if !arrived.is_empty() {
-                let mut shelf = self.shared.shelf;
+                let shelf = self.shared.shelf;
                 for (added, png, front) in &arrived {
                     if added.new
                         && !shelf.peek().iter().any(|h| h.skin.file == added.skin.file)
                         && let Some(thumb) = handle(front)
                     {
-                        shelf.write().insert(0, Hung { skin: added.skin.clone(), thumb, png: Arc::new(png.clone()) });
+                        shelf.soft(|s| s.insert(0, Hung { skin: added.skin.clone(), thumb, png: Arc::new(png.clone()) }));
                     }
                 }
                 desk.reload_shelf();
