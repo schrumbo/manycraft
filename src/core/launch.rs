@@ -247,7 +247,6 @@ pub fn settle(pid: u32) {
     {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{NORMAL_PRIORITY_CLASS, OpenProcess, PROCESS_SET_INFORMATION, SetPriorityClass};
-        // SAFETY: the handle is closed again right after the call and no pointer is passed.
         unsafe {
             let handle = OpenProcess(PROCESS_SET_INFORMATION, 0, pid);
             if !handle.is_null() {
