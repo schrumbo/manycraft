@@ -278,6 +278,32 @@ fn a_running_instance_follows_at_its_next_start() {
 }
 
 #[test]
+fn a_file_replaced_in_the_sync_folder_is_what_an_instance_starts_with() {
+    let w = world();
+    let (a, b) = (w.instance("A"), w.instance("B"));
+    w.put(a.dir.join("options.txt"), "version:3955\nguiScale:3\n");
+    w.put(a.dir.join("config").join("mod.toml"), "a=1");
+    w.on(&a);
+    let game = b.dir.join("games").join(ACCOUNT).join("options.txt");
+    let prepare = || {
+        w.start(&b);
+        verify_game(options_for(&w.mother, &b.dir).unwrap().as_deref(), &game, Some(3955)).unwrap();
+    };
+    prepare();
+    assert!(read(game.clone()).contains("guiScale:3"));
+    assert_eq!(read(b.dir.join("config").join("mod.toml")), "a=1");
+    fs::remove_file(w.shared("options.txt")).unwrap();
+    w.put(w.shared("options.txt"), "guiScale:1\nfov:90\n");
+    fs::remove_file(w.shared("config/mod.toml")).unwrap();
+    w.put(w.shared("config/mod.toml"), "a=2");
+    prepare();
+    let text = read(game);
+    assert!(text.contains("guiScale:1") && text.contains("fov:90") && !text.contains("guiScale:3"), "{text}");
+    assert_eq!(read(b.dir.join("config").join("mod.toml")), "a=2");
+    assert_eq!(read(w.shared("options.txt")), "guiScale:1\nfov:90\n");
+}
+
+#[test]
 fn options_older_than_1_13_stay_out_of_the_shared_options() {
     let w = world();
     let a = w.instance("A");

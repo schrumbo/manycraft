@@ -522,6 +522,11 @@ pub fn folder() -> PathBuf {
     Mother::current().root
 }
 
+/// Where the shared files of `kind` live: the `options.txt` file or the folder of the rest, in the sync folder.
+pub fn path_of(kind: Kind) -> PathBuf {
+    Mother::current().path(kind.rel())
+}
+
 /// Sets the keys of `changes` the sync folder may hold in its `options.txt` and returns the ones that differed.
 pub(crate) fn put_options(mother: &Mother, changes: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
     super::sync::with_templates(|| {
